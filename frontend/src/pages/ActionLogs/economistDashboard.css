@@ -1,0 +1,233 @@
+.economist-dashboard-bg {
+  background: #f5f6fa;
+  min-height: 100vh;
+  height: 100vh;
+  padding: 24px;
+  overflow: hidden;
+}
+.economist-dashboard-header {
+  margin-bottom: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px #f0f1f2;
+  background: #fff;
+}
+.dashboard-header-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.dashboard-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard-title {
+  font-size: 2rem;
+  font-weight: 700;
+}
+.create-action-log-btn {
+  background: #2563eb;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 1rem;
+  padding: 0 24px;
+  height: 40px;
+}
+.economist-dashboard-search-card {
+  margin-bottom: 24px;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px #f0f1f2;
+  background: #fff;
+}
+.dashboard-search-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.dashboard-search-input {
+  flex: 1;
+  border-radius: 8px;
+  height: 40px;
+}
+.dashboard-filter-btn {
+  border-radius: 8px;
+  height: 40px;
+}
+.dashboard-status-select {
+  width: 160px;
+  border-radius: 8px;
+  height: 40px;
+}
+.economist-dashboard-table-card {
+  border-radius: 12px;
+  box-shadow: 0 2px 8px #f0f1f2;
+  background: #fff;
+}
+.dashboard-table {
+  border: 1px solid #e8e8e8;
+}
+.dashboard-table .ant-table-thead > tr > th {
+  background-color: #f5f5f5;
+  color: #1a1a1a;
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 16px;
+  border-bottom: 2px solid #e8e8e8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+.dashboard-table .ant-table-thead > tr > th::before {
+  display: none !important;
+}
+.dashboard-table .ant-table-thead > tr > th.ant-table-column-sort {
+  background-color: #f0f0f0;
+}
+.dashboard-table .ant-table-tbody > tr:nth-child(even) {
+  background-color: #fafafa;
+}
+.dashboard-table .ant-table-tbody > tr:nth-child(odd) {
+  background-color: #ffffff;
+}
+.dashboard-table .ant-table-tbody > tr:hover > td {
+  background-color: #f0f0f0 !important;
+}
+.dashboard-table .ant-table-tbody > tr > td {
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background-color 0.3s;
+}
+.dashboard-table-row {
+  transition: all 0.3s;
+}
+.dashboard-table-row:hover {
+  background-color: #fafafa;
+}
+.dashboard-table .ant-table-cell {
+  vertical-align: top;
+}
+.dashboard-table .ant-tag {
+  margin: 0;
+  border-radius: 4px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.dashboard-table .ant-btn-link {
+  padding: 0;
+  height: auto;
+  font-size: 13px;
+  color: #1890ff;
+}
+.dashboard-table .ant-btn-link:hover {
+  color: #40a9ff;
+  background: transparent;
+}
+.dashboard-table .ant-select {
+  width: 100%;
+}
+.dashboard-table .ant-select-selector {
+  border-radius: 4px !important;
+  border-color: #d9d9d9 !important;
+}
+.dashboard-table .ant-select:hover .ant-select-selector {
+  border-color: #40a9ff !important;
+}
+.dashboard-table .ant-select-focused .ant-select-selector {
+  border-color: #40a9ff !important;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.1) !important;
+}
+.dashboard-table .ant-select-item {
+  font-size: 13px;
+  padding: 8px 12px;
+}
+.dashboard-table .ant-select-item-option-selected {
+  background-color: #e6f7ff !important;
+  color: #1890ff !important;
+  font-weight: 500;
+}
+.dashboard-table .ant-select-dropdown {
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.dashboard-table .ant-select-selection-item {
+  font-size: 13px;
+  font-weight: 500;
+}
+.dashboard-table-card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.dashboard-table-card .ant-card-body {
+  padding: 0;
+}
+.dashboard-table .ant-tag-blue {
+  background: #e6f7ff;
+  border-color: #91d5ff;
+  color: #1890ff;
+}
+.dashboard-table .ant-tag-orange {
+  background: #fff7e6;
+  border-color: #ffd591;
+  color: #fa8c16;
+}
+.dashboard-table .ant-tag-green {
+  background: #f6ffed;
+  border-color: #b7eb8f;
+  color: #52c41a;
+}
+.dashboard-table .ant-empty {
+  margin: 32px 0;
+}
+.dashboard-table .ant-empty-description {
+  color: #999;
+  font-size: 14px;
+}
+.dashboard-table .ant-spin-container {
+  min-height: 200px;
+}
+.dashboard-table .ant-spin {
+  margin: 32px 0;
+}
+.dashboard-modal .ant-modal-content {
+  /* Remove custom centering styles */
+}
+.dashboard-modal .ant-modal {
+  /* Remove custom centering styles */
+}
+.dashboard-modal .ant-modal-title {
+  /* Remove custom centering styles */
+}
+.dashboard-modal .ant-modal-body {
+  /* Remove custom centering styles */
+}
+.dashboard-modal .modal-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  /* Restore previous style */
+}
+.modal-row {
+  display: flex;
+  gap: 16px;
+}
+.modal-form-item {
+  flex: 1;
+}
+.modal-footer-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.modal-cancel-btn {
+  background: #f3f4f6;
+  color: #222;
+  border-radius: 8px;
+  font-weight: 500;
+}
+.modal-create-btn {
+  background: #2563eb;
+  border-radius: 8px;
+  font-weight: 500;
+} 
