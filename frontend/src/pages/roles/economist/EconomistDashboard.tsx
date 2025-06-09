@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../../auth/AuthContext';
 import { actionLogService } from '../../../services/actionLogService';
 import { departmentService } from '../../../services/departmentService';
 import { userService } from '../../../services/userService';
-import { ActionLog, ActionLogStatus, CreateActionLogData, ApprovalStatus, ActionLogUpdate } from '../../../types/actionLog';
+import { ActionLog, ActionLogStatus, ActionLogUpdate, CreateActionLogData, ActionLogPriority, ApprovalStatus, ActionLogComment } from '../../../types/actionLog';
 import { Department, DepartmentUnit } from '../../../types/department';
 import { Button, Card, Table, Modal, Form, Input, message, Space, Tag, Select, DatePicker, Layout, Menu, Avatar, Tooltip, Timeline, Spin, Badge, Tabs, Upload, List, Descriptions, Divider } from 'antd';
-import { PlusOutlined, CheckOutlined, FilterOutlined, UserAddOutlined, UserOutlined, FileTextOutlined, FormOutlined, TeamOutlined, SettingOutlined, ClockCircleOutlined, CalendarOutlined, CommentOutlined, ClusterOutlined, UploadOutlined, HistoryOutlined, InfoCircleOutlined, PaperClipOutlined } from '@ant-design/icons';
+import { PlusOutlined, CheckOutlined, FilterOutlined, UserAddOutlined, UserOutlined, FileTextOutlined, FormOutlined, TeamOutlined, SettingOutlined, ClockCircleOutlined, CalendarOutlined, CommentOutlined, ClusterOutlined, UploadOutlined, EyeOutlined, UserSwitchOutlined, EditOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { format, differenceInDays, isPast, isToday } from 'date-fns';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { User } from '../../../types/user';
@@ -14,8 +14,18 @@ import { Dayjs } from 'dayjs';
 import UserDisplay from '../../../components/UserDisplay';
 import { ColumnsType } from 'antd/es/table';
 import * as XLSX from 'xlsx';
+import axios from 'axios';
+import './economistDashboard.css'; // Ensure custom styles are imported
 
 const { Sider, Content } = Layout;
+
+interface ImportMetaEnv {
+  VITE_API_URL: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
 
 interface Role {
   id: number;
@@ -42,51 +52,33 @@ interface DepartmentWithUnits extends Omit<Department, 'units'> {
 
 interface CommentResponse {
   id: number;
+  action_log: number;
+  user: User;
   comment: string;
-  user: {
-    id: number;
-    first_name: string;
-    last_name: string;
-    email: string;
-  };
   created_at: string;
   updated_at: string;
-  status: ActionLogStatus;
-  is_approved: boolean;
+  parent_comment_id?: number;
   replies?: CommentResponse[];
+  status?: ActionLogStatus;
 }
 
-interface LocalActionLogComment {
+interface ActionLogAssignmentHistory {
   id: number;
   action_log: number;
-  user: {
-    id: number;
-    first_name: string;
-    last_name: string;
-    email: string;
-  };
-  comment: string;
-  created_at: string;
-  updated_at: string;
-  status?: ActionLogStatus;
-  is_approved?: boolean;
-  replies?: LocalActionLogComment[];
-}
-
-interface AssignmentHistory {
-  id: number;
   assigned_by: {
     id: number;
     first_name: string;
     last_name: string;
+    email: string;
   };
   assigned_to: Array<{
     id: number;
     first_name: string;
     last_name: string;
+    email: string;
   }>;
-  assigned_at: string;
   comment: string | null;
+  assigned_at: string;
 }
 
 const EconomistDashboard: React.FC = () => {
@@ -102,7 +94,7 @@ const EconomistDashboard: React.FC = () => {
   const [selectedMenuKey, setSelectedMenuKey] = useState('actionLogs');
   const [showAssignedOnly, setShowAssignedOnly] = useState(false);
   const [commentsModalVisible, setCommentsModalVisible] = useState(false);
-  const [selectedLogComments, setSelectedLogComments] = useState<LocalActionLogComment[]>([]);
+  const [selectedLogComments, setSelectedLogComments] = useState<ActionLogComment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
@@ -125,7 +117,9 @@ const EconomistDashboard: React.FC = () => {
   const [approvalForm] = Form.useForm();
   const [assignForm] = Form.useForm();
   const [createForm] = Form.useForm();
-  const [assignmentHistory, setAssignmentHistory] = useState<AssignmentHistory[]>([]);
+  const [notificationCount, setNotificationCount] = useState<number>(0);
+  const [assignmentHistory, setAssignmentHistory] = useState<ActionLogAssignmentHistory[]>([]);
+  const [unreadCounts, setUnreadCounts] = useState<{ [logId: number]: number }>({});
 
   // Add these variables at the component level
   const isUnitHead = user?.designation?.toLowerCase().includes('head') || 
@@ -166,16 +160,25 @@ const EconomistDashboard: React.FC = () => {
 
   const fetchActionLogs = async () => {
     try {
+      console.log('Fetching action logs...');
       const response = await actionLogService.getAll();
+      console.log('Action logs API response:', response);
       
-      const logs = response.results || response;
-      const logsArray = Array.isArray(logs) ? logs : [];
+      const logsArray = Array.isArray(response) ? response : [];
+      console.log('Processed logs array:', logsArray);
       
       // Filter logs based on user's role and unit
       const filteredLogs = logsArray.filter(log => {
+        console.log('Checking log:', log);
+        console.log('User role:', user?.role?.name);
+        console.log('User department unit:', user?.department_unit);
+        console.log('Log created by department unit:', log.created_by?.department_unit);
+        console.log('Log assigned to:', log.assigned_to);
+        
         // If user is Commissioner or Assistant Commissioner, they can see all logs
         if (user?.role?.name?.toLowerCase() === 'commissioner' || 
             user?.role?.name?.toLowerCase() === 'assistant_commissioner') {
+          console.log('User is commissioner/assistant commissioner, showing log');
           return true;
         }
         
@@ -186,20 +189,27 @@ const EconomistDashboard: React.FC = () => {
         if (isUnitHead) {
           const isInUserUnit = log.created_by?.department_unit?.id === user?.department_unit?.id;
           const isAssignedToUser = log.assigned_to?.includes(user?.id);
+          console.log('User is unit head:', isUnitHead);
+          console.log('Is in user unit:', isInUserUnit);
+          console.log('Is assigned to user:', isAssignedToUser);
           return isInUserUnit || isAssignedToUser;
         }
         
         // If user has no department unit, they can't see any logs
         if (!user?.department_unit) {
+          console.log('User has no department unit, filtering out log');
           return false;
         }
         
         // For other roles, check if the log was created in their unit or assigned to them
         const isInUserUnit = log.created_by?.department_unit?.id === user.department_unit.id;
         const isAssignedToUser = log.assigned_to?.includes(user.id);
+        console.log('Is in user unit:', isInUserUnit);
+        console.log('Is assigned to user:', isAssignedToUser);
         
         return isInUserUnit || isAssignedToUser;
       });
+      console.log('Filtered logs:', filteredLogs);
 
       return filteredLogs;
     } catch (error) {
@@ -355,9 +365,15 @@ const EconomistDashboard: React.FC = () => {
       };
 
       // Validate required fields
-      if (!createData.title || !createData.description || !createData.priority || !createData.department_id || !createData.department_unit) {
+      if (!createData.title || !createData.description || !createData.priority) {
         message.error('Please fill in all required fields');
         return;
+      }
+
+      // For commissioner/assistant_commissioner, if no assigned user, use their own department/unit
+      if ((user.role?.name?.toLowerCase() === 'commissioner' || user.role?.name?.toLowerCase() === 'assistant_commissioner') && assignedTo.length === 0) {
+        createData.department_id = user.department;
+        createData.department_unit = user.department_unit?.id;
       }
 
       console.log('Creating action log with data:', createData);
@@ -438,7 +454,7 @@ const EconomistDashboard: React.FC = () => {
           .join('\n');
         message.error(`Failed to assign action log:\n${errorMessages}`);
       } else {
-        message.error('Failed to assign action log');
+      message.error('Failed to assign action log');
       }
     }
   };
@@ -626,17 +642,12 @@ const EconomistDashboard: React.FC = () => {
         id: comment.id,
         action_log: logId,
         user: {
-          id: comment.user.id,
-          first_name: comment.user.first_name,
-          last_name: comment.user.last_name,
+          ...comment.user,
           email: comment.user.email || ''
         },
         comment: comment.comment,
         created_at: comment.created_at,
-        updated_at: comment.updated_at,
-        status: comment.status,
-        is_approved: comment.is_approved,
-        replies: comment.replies || []
+        updated_at: comment.updated_at
       }));
       
       setSelectedLogComments(sortedComments);
@@ -657,61 +668,108 @@ const EconomistDashboard: React.FC = () => {
     }
   };
 
-  const handleViewComments = async (log: ActionLog) => {
-    try {
-      setSelectedLog(log);
-      setCommentsLoading(true);
-      await fetchComments(log.id);
-      setCommentsModalVisible(true);
-    } catch (error) {
-      console.error('Error fetching comments:', error);
-      message.error('Failed to fetch comments');
-    } finally {
-      setCommentsLoading(false);
-    }
-  };
+  const checkNewComments = useCallback((comments: ActionLogComment[]) => {
+    let count = 0;
+    const checkComment = (comment: ActionLogComment) => {
+      if (comment.user.id !== user?.id && !comment.is_viewed) {
+        count++;
+      }
+      if (comment.replies) {
+        comment.replies.forEach(reply => checkComment(reply));
+      }
+    };
+    comments.forEach(checkComment);
+    setNotificationCount(count);
+  }, [user?.id]);
 
-  const handleComments = async (log: ActionLog) => {
-    setSelectedLog(log);
-    setCommentsModalVisible(true);
-    setCommentsLoading(true);
+  useEffect(() => {
+    if (selectedLogComments.length > 0) {
+      checkNewComments(selectedLogComments);
+    }
+  }, [selectedLogComments, checkNewComments]);
+
+  const markCommentsAsViewed = useCallback(async () => {
+    if (!selectedLog) return;
+    
+    try {
+      const response = await axios.post(
+        `http://localhost:8000/api/action-logs/${selectedLog.id}/mark_comments_viewed/`,
+        {},
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`,
+          },
+        }
+      );
+      
+      if (response.status === 200) {
+        setNotificationCount(0);
+        setSelectedLogComments(prev => 
+          prev.map(comment => ({
+            ...comment,
+            is_viewed: true,
+            replies: comment.replies?.map(reply => ({
+              ...reply,
+              is_viewed: true
+            }))
+          }))
+        );
+      }
+    } catch (error) {
+      console.error('Error marking comments as viewed:', error);
+    }
+  }, [selectedLog]);
+
+  const handleViewComments = async (log: ActionLog) => {
+      setSelectedLog(log);
     try {
       const comments = await actionLogService.getComments(log.id);
-      setSelectedLogComments(comments);
+      // Transform the response data to match our interface
+      const transformedComments: ActionLogComment[] = comments.map((comment: any) => ({
+        ...comment,
+        is_viewed: false, // Default to false for new comments
+        is_approved: comment.is_approved || false,
+        status: comment.status || 'open',
+        user: {
+          ...comment.user,
+          email: comment.user.email || ''
+        },
+        replies: comment.replies?.map((reply: any) => ({
+          ...reply,
+          is_viewed: false, // Default to false for new replies
+          is_approved: reply.is_approved || false,
+          status: reply.status || 'open',
+          user: {
+            ...reply.user,
+            email: reply.user.email || ''
+          }
+        }))
+      }));
+      setSelectedLogComments(transformedComments);
+      setCommentsModalVisible(true);
+      await actionLogService.markNotificationsRead(log.id);
+      setUnreadCounts(prev => ({ ...prev, [log.id]: 0 }));
+      markCommentsAsViewed();
     } catch (error) {
       console.error('Error fetching comments:', error);
       message.error('Failed to fetch comments');
-    } finally {
-      setCommentsLoading(false);
     }
   };
 
   const handleAddComment = async () => {
     if (!selectedLog || !newComment.trim()) return;
 
-    setSubmittingComment(true);
+      setSubmittingComment(true);
     try {
-      const comment = await actionLogService.addComment(selectedLog.id, {
-        comment: newComment,
-        parent_comment_id: replyingTo?.id
-      });
-      
-      if (replyingTo) {
-        // Update the parent comment's replies
-        setSelectedLogComments(prev => prev.map(c => {
-          if (c.id === replyingTo.id) {
-            return {
-              ...c,
-              replies: [...(c.replies || []), comment]
-            };
-          }
-          return c;
-        }));
-      } else {
-        // Add as a new top-level comment
-        setSelectedLogComments(prev => [comment, ...prev]);
+      const payload: any = { comment: newComment };
+      if (replyingTo && replyingTo.id) {
+        payload.parent_id = replyingTo.id;
       }
+      console.log('Adding comment:', payload);
+      const comment = await actionLogService.addComment(selectedLog.id, payload);
       
+      console.log('Comment added successfully:', comment);
+      setSelectedLogComments(prev => [comment, ...prev]);
       setNewComment('');
       setReplyingTo(null);
       message.success('Comment added successfully');
@@ -723,16 +781,8 @@ const EconomistDashboard: React.FC = () => {
     }
   };
 
-  const handleReply = (comment: LocalActionLogComment) => {
-    setReplyingTo({
-      id: comment.id,
-      comment: comment.comment,
-      user: comment.user,
-      created_at: comment.created_at,
-      updated_at: comment.updated_at,
-      status: comment.status ?? 'open',
-      is_approved: comment.is_approved ?? false
-    });
+  const handleReply = (comment: CommentResponse) => {
+    setReplyingTo(comment);
     setNewComment('');
   };
 
@@ -741,43 +791,33 @@ const EconomistDashboard: React.FC = () => {
     setNewComment('');
   };
 
+  // Update getCommentColor to assign a unique color per user
+  const commentColors = [
+    '#e6f7ff', // Light blue
+    '#f6ffed', // Light green
+    '#fff7e6', // Light orange
+    '#fff1f0', // Light red
+    '#f9f0ff', // Light purple
+    '#f0f5ff', // Light indigo
+    '#f0fff0', // Light mint
+    '#fffbe6', // Light yellow
+    '#f0f0f0', // Light gray
+  ];
   const getCommentColor = (userId: number) => {
-    const colors = [
-      '#f0f7ff', // Light blue
-      '#f6ffed', // Light green
-      '#fff7e6', // Light orange
-      '#fff1f0', // Light red
-      '#f9f0ff', // Light purple
-    ];
-    return colors[userId % colors.length];
+    return commentColors[userId % commentColors.length];
   };
 
-  const renderComment = (comment: LocalActionLogComment, parent?: LocalActionLogComment, showReplyButton: boolean = false) => {
-    const backgroundColor = getCommentColor(comment.user.id);
+  const renderComment = (comment: ActionLogComment) => {
+    const isCurrentUser = comment.user.id === user?.id;
     return (
-      <div style={{
+      <div style={{ 
         marginBottom: '16px',
         padding: '12px',
-        backgroundColor,
+        backgroundColor: isCurrentUser ? '#bae7ff' : getCommentColor(comment.user.id),
         borderRadius: '8px',
-        border: '1px solid #f0f0f0',
+        border: isCurrentUser ? '2px solid #1890ff' : '1px solid #f0f0f0',
         position: 'relative'
       }}>
-        {/* If this is a reply, show the parent comment as a quote */}
-        {parent && (
-          <div style={{
-            background: '#f5f5f5',
-            borderLeft: '4px solid #1890ff',
-            padding: '8px 12px',
-            marginBottom: '8px',
-            fontStyle: 'italic',
-            color: '#555',
-            fontSize: '13px',
-            borderRadius: '4px'
-          }}>
-            <span style={{ fontWeight: 500 }}>{parent.user.first_name} {parent.user.last_name}:</span> {parent.comment}
-          </div>
-        )}
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
@@ -785,7 +825,7 @@ const EconomistDashboard: React.FC = () => {
         }}>
           <div style={{ fontWeight: 500 }}>
             {comment.user.first_name} {comment.user.last_name}
-          </div>
+        </div>
           <div style={{ color: '#666' }}>
             {format(new Date(comment.created_at), 'MMM dd, yyyy HH:mm')}
           </div>
@@ -794,20 +834,15 @@ const EconomistDashboard: React.FC = () => {
           {comment.comment}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          {/* Show Reply button or label depending on context */}
-          {showReplyButton ? (
-            <Button
-              type="link"
-              size="small"
-              onClick={() => handleReply(comment)}
+          {replyingTo && (
+          <Button 
+            type="link" 
+            size="small"
+            onClick={() => handleReply(comment)}
               style={{ padding: 0 }}
-            >
-              Reply
-            </Button>
-          ) : (
-            comment.replies && comment.replies.length > 0 && (
-              <span style={{ color: '#1890ff', fontSize: '13px', fontStyle: 'italic' }}>Reply</span>
-            )
+          >
+            Reply
+          </Button>
           )}
           {comment.status && (
             <Tag color={
@@ -824,12 +859,11 @@ const EconomistDashboard: React.FC = () => {
             </Tag>
           )}
         </div>
-        {/* Render replies, passing the current comment as parent */}
         {comment.replies && comment.replies.length > 0 && (
           <div style={{ marginLeft: '24px', marginTop: '12px' }}>
-            {comment.replies.map(reply => (
-              <div key={reply.id + '-' + comment.id}>
-                {renderComment(reply, comment, showReplyButton)}
+            {comment.replies.map((reply, idx) => (
+              <div key={reply.id + '-' + idx}>
+                {renderComment(reply)}
               </div>
             ))}
           </div>
@@ -840,33 +874,23 @@ const EconomistDashboard: React.FC = () => {
 
   const handleView = async (log: ActionLog) => {
     setSelectedLog(log);
-    setViewModalVisible(true);
+      setViewModalVisible(true);
     setCommentsLoading(true);
     try {
-      const [logDetails, commentsResponse, historyResponse] = await Promise.all([
+      const [logDetails, commentsResponse, assignmentHistory] = await Promise.all([
         actionLogService.getById(log.id),
         actionLogService.getComments(log.id),
         actionLogService.getAssignmentHistory(log.id)
       ]);
       setSelectedLogDetails(logDetails);
-      setAssignmentHistory(historyResponse);
-      const sortedComments = commentsResponse.map(comment => ({
-        id: comment.id,
-        action_log: log.id,
+      setAssignmentHistory(assignmentHistory);
+      setSelectedLogComments(commentsResponse.map(comment => ({
+        ...comment,
         user: {
-          id: comment.user.id,
-          first_name: comment.user.first_name,
-          last_name: comment.user.last_name,
+          ...comment.user,
           email: comment.user.email || ''
-        },
-        comment: comment.comment,
-        created_at: comment.created_at,
-        updated_at: comment.updated_at,
-        status: comment.status,
-        is_approved: comment.is_approved,
-        replies: comment.replies || []
-      }));
-      setSelectedLogComments(sortedComments);
+        }
+      })));
     } catch (error) {
       console.error('Error fetching log details:', error);
       message.error('Failed to fetch log details');
@@ -875,297 +899,203 @@ const EconomistDashboard: React.FC = () => {
     }
   };
 
-  const renderAssignmentHistory = () => {
-    if (!assignmentHistory.length) return null;
-
-    return (
-      <div style={{ marginTop: '24px' }}>
-        <div style={{ 
-          display: 'flex',
-          alignItems: 'center',
-          marginBottom: '16px'
-        }}>
-          <HistoryOutlined style={{ color: '#1890ff', fontSize: '16px', marginRight: '12px' }} />
-          <h3 style={{ 
-            margin: 0,
-            fontSize: '16px',
-            fontWeight: 600,
-            color: '#1a1a1a'
-          }}>
-            Assignment History
-          </h3>
-        </div>
-        <Timeline style={{ paddingLeft: '28px' }}>
-          {assignmentHistory.map((history, idx) => (
-            <Timeline.Item key={history.id} color={idx === 0 ? 'green' : idx === assignmentHistory.length - 1 ? 'blue' : 'gray'}>
-              <div style={{ marginBottom: '8px' }}>
-                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
-                  {idx === 0 && <span style={{ color: 'green', fontWeight: 700, marginRight: 8 }}>[Start of Assignment]</span>}
-                  {idx === assignmentHistory.length - 1 && <span style={{ color: '#1890ff', fontWeight: 700, marginRight: 8 }}>[Current Assignment]</span>}
-                  Assigned by <b>{history.assigned_by.first_name} {history.assigned_by.last_name}</b> to{' '}
-                  <span>
-                    {history.assigned_to.map((user, i) => (
-                      <span key={user.id + '-' + i}>
-                        <b>{user.first_name} {user.last_name}</b>{i < history.assigned_to.length - 1 ? ', ' : ''}
-                      </span>
-                    ))}
-                  </span>
-                  {' '}on {format(new Date(history.assigned_at), 'MMM dd, yyyy HH:mm')}
-                </div>
-                {history.comment && (
-                  <div style={{ 
-                    color: '#666',
-                    fontSize: '13px',
-                    backgroundColor: '#f5f5f5',
-                    padding: '8px 12px',
-                    borderRadius: '4px',
-                    marginTop: '8px'
-                  }}>
-                    {history.comment}
-                  </div>
-                )}
-              </div>
-            </Timeline.Item>
-          ))}
-        </Timeline>
-      </div>
-    );
-  };
-
   const renderViewModal = () => {
     if (!selectedLogDetails) return null;
 
     return (
       <Modal
-        title="View Action Log"
+        title={
+          <div style={{ 
+            fontSize: '20px', 
+            fontWeight: 600, 
+            color: '#1a1a1a',
+            borderBottom: '1px solid #f0f0f0',
+            paddingBottom: '16px',
+            marginBottom: '24px'
+          }}>
+            Action Log Details
+          </div>
+        }
         open={viewModalVisible}
-        onCancel={() => setViewModalVisible(false)}
-        width={1200}
+        onCancel={() => {
+          setViewModalVisible(false);
+          setSelectedLogDetails(null);
+        }}
         footer={null}
+        width={1200}
+        styles={{
+          body: {
+            maxHeight: '70vh',
+            overflow: 'auto'
+          }
+        }}
       >
-        <div style={{ display: 'flex', gap: '32px', maxHeight: '70vh', overflow: 'hidden' }}>
-          {/* Left Column */}
-          <div style={{ flex: '1.2', minWidth: 0, overflow: 'auto' }}>
+        <div style={{ display: 'flex', gap: '32px' }}>
+          {/* Left Column: Basic Info & Assignment History */}
+          <div style={{ flex: '1.2', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '24px' }}>
             {/* Basic Info Section */}
             <div style={{ 
-              marginBottom: '24px',
               padding: '24px',
               backgroundColor: '#fff',
               borderRadius: '8px',
-              border: '1px solid #f0f0f0'
+              border: '1px solid #f0f0f0',
             }}>
-              <div style={{ 
-                display: 'flex',
-                alignItems: 'center',
-                marginBottom: '16px'
-              }}>
-                <InfoCircleOutlined style={{ color: '#1890ff', fontSize: '16px', marginRight: '12px' }} />
-                <h3 style={{ 
-                  margin: 0,
-                  fontSize: '16px',
-                  fontWeight: 600,
-                  color: '#1a1a1a'
-                }}>
-                  Basic Information
-                </h3>
-              </div>
-              <Descriptions column={1}>
-                <Descriptions.Item label="Title">{selectedLogDetails.title}</Descriptions.Item>
-                <Descriptions.Item label="Description">{selectedLogDetails.description}</Descriptions.Item>
-                <Descriptions.Item label="Department">{selectedLogDetails.department?.name}</Descriptions.Item>
-                <Descriptions.Item label="Status">
-                  <Tag color={getStatusColor(selectedLogDetails.status)}>
-                    {selectedLogDetails.status}
+              <h3 style={{ 
+                marginBottom: '20px',
+                fontSize: '16px',
+                fontWeight: 600,
+                color: '#1a1a1a',
+                borderBottom: '1px solid #f0f0f0',
+                paddingBottom: '8px',
+              }}>Basic Info</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', rowGap: 12, columnGap: 8 }}>
+                <div style={{ fontWeight: 500, color: '#444' }}>Title:</div>
+                <div>{selectedLogDetails.title}</div>
+                <div style={{ fontWeight: 500, color: '#444' }}>Description:</div>
+                <div>{selectedLogDetails.description}</div>
+                <div style={{ fontWeight: 500, color: '#444' }}>Status:</div>
+                <div>
+                  <Tag color={getStatusColor(selectedLogDetails.status)} style={{ padding: '4px 12px', fontSize: '13px', fontWeight: 500 }}>
+                    {selectedLogDetails.status.charAt(0).toUpperCase() + selectedLogDetails.status.slice(1).replace('_', ' ')}
                   </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="Priority">
-                  <Tag color={selectedLogDetails.priority === 'High' ? 'red' : selectedLogDetails.priority === 'Medium' ? 'orange' : 'green'}>
-                    {selectedLogDetails.priority}
-                  </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="Due Date">
-                  {selectedLogDetails.due_date ? format(new Date(selectedLogDetails.due_date), 'MMM dd, yyyy HH:mm') : 'Not set'}
-                </Descriptions.Item>
-                <Descriptions.Item label="Created By">
-                  {selectedLogDetails.created_by?.first_name} {selectedLogDetails.created_by?.last_name}
-                </Descriptions.Item>
-                <Descriptions.Item label="Created At">
-                  {format(new Date(selectedLogDetails.created_at), 'MMM dd, yyyy HH:mm')}
-                </Descriptions.Item>
-              </Descriptions>
             </div>
-
-            {/* Assignment Section */}
-            <div style={{ 
-              marginBottom: '24px',
-              padding: '24px',
-              backgroundColor: '#fff',
-              borderRadius: '8px',
-              border: '1px solid #f0f0f0'
-            }}>
-              <div style={{ 
-                display: 'flex',
-                alignItems: 'center',
-                marginBottom: '16px'
-              }}>
-                <UserAddOutlined style={{ color: '#1890ff', fontSize: '16px', marginRight: '12px' }} />
-                <h3 style={{ 
-                  margin: 0,
-                  fontSize: '16px',
-                  fontWeight: 600,
-                  color: '#1a1a1a'
-                }}>
-                  Assigned To
-                </h3>
-              </div>
-              <Space size={[8, 8]} wrap style={{ paddingLeft: '28px' }}>
-                {selectedLogDetails.assigned_to?.map(userId => {
-                  const user = users.find(u => u.id === userId);
-                  return user ? (
-                    <Tag key={user.id}>
-                      {user.first_name} {user.last_name}
-                    </Tag>
-                  ) : null;
-                })}
-              </Space>
-
-              {/* Assignment History Timeline */}
-              {assignmentHistory.length > 0 && (
-                <div style={{ marginTop: '24px' }}>
-                  <div style={{ 
-                    display: 'flex',
-                    alignItems: 'center',
-                    marginBottom: '16px'
-                  }}>
-                    <HistoryOutlined style={{ color: '#1890ff', fontSize: '16px', marginRight: '12px' }} />
-                    <h3 style={{ 
-                      margin: 0,
-                      fontSize: '16px',
-                      fontWeight: 600,
-                      color: '#1a1a1a'
-                    }}>
-                      Assignment History
-                    </h3>
+                <div style={{ fontWeight: 500, color: '#444' }}>Created At:</div>
+                <div>{format(new Date(selectedLogDetails.created_at), 'yyyy-MM-dd HH:mm')}</div>
+                <div style={{ fontWeight: 500, color: '#444' }}>Due Date:</div>
+                <div>
+                  {selectedLogDetails.due_date ? (
+                    <>
+                      {format(new Date(selectedLogDetails.due_date), 'yyyy-MM-dd')}
+                      {/* Days Remaining Tag */}
+                      <span style={{ marginLeft: 12 }}>
+                        {(() => {
+                          const dueDate = new Date(selectedLogDetails.due_date);
+                          const today = new Date();
+                          const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+                          const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                          const daysRemaining = Math.ceil((startOfDueDate.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24));
+                          let color = 'green';
+                          if (daysRemaining <= 5) color = 'red';
+                          if (daysRemaining < 0) color = 'red';
+                          return (
+                            <Tag color={color} style={{ marginLeft: 0 }}>
+                              {daysRemaining < 0 ? (
+                                'Overdue'
+                              ) : daysRemaining === 0 ? (
+                                '0 days remaining'
+                              ) : (
+                                `${daysRemaining} days remaining`
+                              )}
+                            </Tag>
+                          );
+                        })()}
+                      </span>
+                    </>
+                  ) : 'Not set'}
                   </div>
-                  <Timeline style={{ paddingLeft: '28px' }}>
-                    {assignmentHistory.map((history, idx) => (
-                      <Timeline.Item key={history.id} color={idx === 0 ? 'green' : idx === assignmentHistory.length - 1 ? 'blue' : 'gray'}>
-                        <div style={{ marginBottom: '8px' }}>
-                          <div style={{ fontWeight: 500, marginBottom: '4px' }}>
-                            {idx === 0 && <span style={{ color: 'green', fontWeight: 700, marginRight: 8 }}>[Start of Assignment]</span>}
-                            {idx === assignmentHistory.length - 1 && <span style={{ color: '#1890ff', fontWeight: 700, marginRight: 8 }}>[Current Assignment]</span>}
-                            Assigned by <b>{history.assigned_by.first_name} {history.assigned_by.last_name}</b> to{' '}
-                            <span>
-                              {history.assigned_to.map((user, i) => (
-                                <span key={user.id + '-' + i}>
-                                  <b>{user.first_name} {user.last_name}</b>{i < history.assigned_to.length - 1 ? ', ' : ''}
-                                </span>
-                              ))}
-                            </span>
-                            {' '}on {format(new Date(history.assigned_at), 'MMM dd, yyyy HH:mm')}
-                          </div>
-                          {history.comment && (
-                            <div style={{ 
-                              color: '#666',
-                              fontSize: '13px',
-                              backgroundColor: '#f5f5f5',
-                              padding: '8px 12px',
-                              borderRadius: '4px',
-                              marginTop: '8px'
-                            }}>
-                              {history.comment}
-                            </div>
-                          )}
-                        </div>
-                      </Timeline.Item>
-                    ))}
-                  </Timeline>
+                <div style={{ fontWeight: 500, color: '#444' }}>Created By:</div>
+                <div>{selectedLogDetails.created_by?.first_name} {selectedLogDetails.created_by?.last_name}</div>
+                <div style={{ fontWeight: 500, color: '#444' }}>Department:</div>
+                <div>{selectedLogDetails.department?.name}</div>
+                <div style={{ fontWeight: 500, color: '#444' }}>Department Unit:</div>
+                <div>{selectedLogDetails.created_by?.department_unit?.name || 'Not specified'}</div>
                 </div>
-              )}
             </div>
-
-            {/* Attachments Section */}
+            {/* Assignment History Section */}
             <div style={{ 
-              marginBottom: '24px',
               padding: '24px',
               backgroundColor: '#fff',
               borderRadius: '8px',
-              border: '1px solid #f0f0f0'
+              border: '1px solid #f0f0f0',
+              flex: 1,
+              minHeight: '200px',
             }}>
-              <div style={{ 
-                display: 'flex',
-                alignItems: 'center',
-                marginBottom: '16px'
-              }}>
-                <PaperClipOutlined style={{ color: '#1890ff', fontSize: '16px', marginRight: '12px' }} />
                 <h3 style={{ 
-                  margin: 0,
+                marginBottom: '20px',
                   fontSize: '16px',
                   fontWeight: 600,
-                  color: '#1a1a1a'
-                }}>
-                  Attachments
-                </h3>
+                color: '#1a1a1a',
+                borderBottom: '1px solid #f0f0f0',
+                paddingBottom: '8px',
+              }}>Assignment History</h3>
+              <Timeline
+                items={assignmentHistory.length === 0 ? [
+                  { color: 'gray', children: 'No assignment history' }
+                ] : assignmentHistory.map((assignment) => ({
+                  key: assignment.id,
+                  children: (
+                    <div>
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong>Assigned by:</strong> {getFullName(assignment.assigned_by)}
               </div>
-              <List
-                dataSource={selectedLogDetails.attachments || []}
-                renderItem={attachment => (
-                  <List.Item>
-                    <a href={attachment.file} target="_blank" rel="noopener noreferrer">
-                      {attachment.filename}
-                    </a>
-                  </List.Item>
-                )}
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong>Assigned to:</strong>{' '}
+                        {(() => {
+                          const currentUserId = user?.id || 0;
+                          const assignedUsers = assignment.assigned_to;
+                          const isCurrentUserAssigned = assignedUsers.some(u => u.id === currentUserId);
+                          if (isCurrentUserAssigned) {
+                            const otherUsers = assignedUsers.filter(u => u.id !== currentUserId);
+                  return (
+                              <>
+                                <Tag color="default" style={{ margin: 0 }}>Me</Tag>
+                                {otherUsers.map(u => (
+                                  <Tag key={u.id} color="default">{u.first_name} {u.last_name}</Tag>
+                                ))}
+                              </>
+                            );
+                          }
+                          return assignedUsers.map(u => (
+                            <Tag key={u.id} color="default">{u.first_name} {u.last_name}</Tag>
+                          ));
+                        })()}
+                      </div>
+                      {assignment.comment && (
+                        <div style={{ marginBottom: '8px' }}>
+                          <strong>Comment:</strong> {assignment.comment}
+                        </div>
+                      )}
+                      <div style={{ color: '#666', fontSize: '12px' }}>
+                        {format(new Date(assignment.assigned_at), 'yyyy-MM-dd HH:mm')}
+            </div>
+          </div>
+                  )
+                }))}
               />
             </div>
           </div>
-
-          {/* Right Column - Comments */}
+          {/* Right Column: Comments */}
+          <div style={{ flex: '1', minWidth: 0 }}>
           <div style={{ 
-            flex: '0.8',
-            minWidth: 0,
-            maxHeight: '70vh',
-            overflow: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
+            padding: '24px',
             backgroundColor: '#fff',
             borderRadius: '8px',
             border: '1px solid #f0f0f0',
-            padding: '24px',
-          }}>
-            <div style={{ 
-              display: 'flex',
-              alignItems: 'center',
-              marginBottom: '16px'
+              minHeight: '100%',
+              height: '100%',
             }}>
-              <CommentOutlined style={{ color: '#1890ff', fontSize: '16px', marginRight: '12px' }} />
               <h3 style={{ 
-                margin: 0,
+                marginBottom: '20px',
                 fontSize: '16px',
                 fontWeight: 600,
-                color: '#1a1a1a'
-              }}>
-                Comments
-              </h3>
+                color: '#1a1a1a',
+                borderBottom: '1px solid #f0f0f0',
+                paddingBottom: '8px',
+              }}>Comments</h3>
+              {commentsLoading ? (
+                <div style={{ textAlign: 'center', padding: '20px' }}>
+                  <Spin />
             </div>
-            {commentsLoading ? (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <Spin />
-              </div>
-            ) : (
-              <div style={{ 
-                flex: 1,
-                overflowY: 'auto',
-                maxHeight: 'calc(70vh - 80px)',
-                paddingRight: '8px'
-              }}>
-                {selectedLogComments.map(comment => (
-                  <div key={comment.id} style={{ marginBottom: '16px' }}>
-                    {renderComment(comment, undefined, false)}
-                  </div>
-                ))}
-              </div>
-            )}
+              ) : (
+                <div>
+                  {selectedLogComments.map(comment => (
+                    <div key={comment.id}>
+                      {renderComment(comment)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </Modal>
@@ -1364,73 +1294,79 @@ const EconomistDashboard: React.FC = () => {
 
         return (
           <Space>
-            <Button 
-              type="link" 
-              onClick={() => handleView(record)}
-            >
-              View
-            </Button>
+            <Tooltip title="View">
+              <Button type="primary" size="small" icon={<EyeOutlined />} onClick={() => handleView(record)} />
+            </Tooltip>
             {canAssign && (
               isAssigned ? (
                 canReassign ? (
-                  <Button 
-                    type="link" 
-                    onClick={() => {
+                  <Tooltip title="Re-assign">
+                    <Button type="primary" size="small" icon={<UserSwitchOutlined />} onClick={() => {
                       setSelectedLog(record);
                       setAssignModalVisible(true);
-                    }}
-                  >
-                    Re-assign
-                  </Button>
+                    }} />
+                  </Tooltip>
                 ) : (
-                  <Button 
-                    type="link" 
-                    disabled
-                    style={{ color: '#999', cursor: 'not-allowed' }}
-                  >
-                    Re-assign
-                  </Button>
+                  <Tooltip title="Re-assign">
+                    <Button type="default" size="small" icon={<UserSwitchOutlined />} disabled />
+                  </Tooltip>
                 )
               ) : (
-                <Button 
-                  type="link" 
-                  onClick={() => {
+                <Tooltip title="Assign">
+                  <Button type="primary" size="small" icon={<UserSwitchOutlined />} onClick={() => {
                     setSelectedLog(record);
                     setAssignModalVisible(true);
-                  }}
-                >
-                  {assignableUsers.length > 0 ? 'Assign' : 'No Users Available'}
-                </Button>
+                  }} />
+                </Tooltip>
               )
             )}
             {isAssignedToMe && (
-              <Button
-                type="link"
-                onClick={() => {
+              <Tooltip title="Update Status">
+                <Button type="primary" size="small" icon={<EditOutlined />} onClick={() => {
                   setSelectedLog(record);
                   setStatusModalVisible(true);
-                }}
-              >
-                Update Status
-              </Button>
+                }} />
+              </Tooltip>
             )}
             {canApprove && (
-              <Button
-                type="link"
-                onClick={() => {
+              <Tooltip title="Approve">
+                <Button type="primary" size="small" icon={<CheckCircleOutlined />} onClick={() => {
                   setSelectedLog(record);
                   setApprovalModalVisible(true);
-                }}
-              >
-                Approve
-              </Button>
+                }} />
+              </Tooltip>
             )}
-            <Button
-              type="link"
-              onClick={() => handleViewComments(record)}
-            >
-              Comments
-            </Button>
+            <Tooltip title="Comments">
+              <Badge
+                count={unreadCounts[record.id] || 0}
+                size="small"
+                style={{
+                  position: 'absolute',
+                  top: -6,
+                  right: -6,
+                  background: unreadCounts[record.id] ? '#ff4d4f' : 'transparent',
+                  color: '#fff',
+                  boxShadow: '0 0 0 2px #fff',
+                  fontWeight: 600,
+                  fontSize: 12,
+                  minWidth: 18,
+                  height: 18,
+                  lineHeight: '18px',
+                  padding: 0,
+                  display: unreadCounts[record.id] ? 'inline-block' : 'none',
+                  zIndex: 2
+                }}
+                overflowCount={99}
+              >
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<CommentOutlined />}
+                  onClick={() => handleViewComments(record)}
+                  style={{ position: 'relative', background: '#1677ff', border: 'none', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}
+                />
+              </Badge>
+            </Tooltip>
           </Space>
         );
       },
@@ -1469,8 +1405,8 @@ const EconomistDashboard: React.FC = () => {
     {
       key: 'actionLogs',
       icon: <FileTextOutlined />,
-      label: (typeof user.role === 'string' ? user.role : user.role?.name)?.toLowerCase().includes('commissioner')
-        ? 'All Action Logs'
+      label: user.role?.name?.toLowerCase().includes('commissioner') 
+        ? 'All Action Logs' 
         : 'All Action Logs',
     },
     {
@@ -1579,7 +1515,7 @@ const EconomistDashboard: React.FC = () => {
           message.error('Failed to process file');
         }
       };
-      reader.readAsBinaryString(file);
+        reader.readAsBinaryString(file);
     } catch (error) {
       console.error('Error uploading file:', error);
       message.error('Failed to upload file');
@@ -1598,11 +1534,21 @@ const EconomistDashboard: React.FC = () => {
     }
   }, [assignModalVisible, assignForm]);
 
-  const renderStaffOption = (staff: User) => (
-    <Select.Option key={staff.id} value={staff.id}>
-      {staff.first_name} {staff.last_name} ({staff.designation?.name || 'No Designation'})
-    </Select.Option>
-  );
+  useEffect(() => {
+    const fetchUnreadCounts = async () => {
+      const counts: { [logId: number]: number } = {};
+      await Promise.all(actionLogs.map(async (log) => {
+        try {
+          const res = await actionLogService.getUnreadNotificationCount(log.id);
+          counts[log.id] = res;
+        } catch {
+          counts[log.id] = 0;
+        }
+      }));
+      setUnreadCounts(counts);
+    };
+    if (actionLogs.length > 0) fetchUnreadCounts();
+  }, [actionLogs]);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -1651,40 +1597,46 @@ const EconomistDashboard: React.FC = () => {
       </Sider>
       <Layout style={{ marginLeft: 200, minHeight: '100vh' }}>
         <Content style={{ padding: 24, minHeight: 280, background: '#fff' }}>
-          <div>
-            <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0, marginBottom: 24 }}>Action Logs</h1>
-            <div style={{ marginBottom: 16, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-              <Input.Search
-                placeholder="Search action logs..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                style={{ width: 240 }}
-                allowClear
-              />
-              <Select
-                placeholder="Filter by status"
-                value={statusFilter || undefined}
-                onChange={value => setStatusFilter(value)}
-                allowClear
-                style={{ width: 180 }}
-                options={statusFilterOptions}
-              />
-              <Button
-                type={showAssignedOnly ? 'primary' : 'default'}
-                icon={<UserOutlined />}
-                onClick={() => setShowAssignedOnly(v => !v)}
-              >
-                Assigned To Me
-              </Button>
-              {canCreateLogs && (
+          <Card
+            className="dashboard-table-card"
+            style={{ marginBottom: 24, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}
+            styles={{ body: { padding: 0 } }}
+          >
+            <div className="dashboard-table-header-sticky">
+              <h1 style={{ fontSize: '24px', fontWeight: 700, margin: 0 }}>Action Logs</h1>
+              <div style={{ display: 'flex', gap: 16 }}>
+                <Input.Search
+                  placeholder="Search action logs..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  style={{ width: 240 }}
+                  allowClear
+                />
+                <Select
+                  placeholder="Filter by status"
+                  value={statusFilter || undefined}
+                  onChange={value => setStatusFilter(value)}
+                  allowClear
+                  style={{ width: 180 }}
+                  options={statusFilterOptions}
+                />
                 <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => setCreateModalVisible(true)}
+                  type={showAssignedOnly ? 'primary' : 'default'}
+                  icon={<UserOutlined />}
+                  onClick={() => setShowAssignedOnly(v => !v)}
                 >
-                  Create Action Log
+                  Assigned To Me
                 </Button>
-              )}
+                {canCreateLogs && (
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => setCreateModalVisible(true)}
+                  >
+                    Create Action Log
+                  </Button>
+                )}
+              </div>
             </div>
             <Table
               columns={columns}
@@ -1693,121 +1645,145 @@ const EconomistDashboard: React.FC = () => {
               rowKey="id"
               pagination={{ pageSize: 10 }}
               bordered
-              style={{ background: '#fff', borderRadius: 8 }}
+              className="dashboard-table"
+              style={{ borderRadius: 8, fontSize: 14 }}
             />
-            {/* Modals and dialogs */}
-            {renderViewModal()}
-            <Modal
-              title="Create Action Log"
-              open={createModalVisible}
-              onCancel={() => setCreateModalVisible(false)}
-              footer={null}
-              destroyOnHidden
+          </Card>
+          <div style={{ width: '100%', textAlign: 'center', padding: '16px 0', background: '#f5f6fa', color: '#888', fontSize: 14, borderTop: '1px solid #e0e0e0', marginBottom: 24 }}>
+            Copyright &copy; 2025 Project Analysis & Public Investment Department (PAP) || Ministry of Finance, Planning & Economic Development (MoFPED)
+          </div>
+          {/* Modals and dialogs */}
+          {renderViewModal()}
+          <Modal
+            title="Create Action Log"
+            open={createModalVisible}
+            onCancel={() => setCreateModalVisible(false)}
+            footer={null}
+            destroyOnHidden
+          >
+            <Form
+              form={createForm}
+              layout="vertical"
+              onFinish={handleCreate}
             >
-              <Form
-                form={createForm}
-                layout="vertical"
-                onFinish={handleCreate}
+              <Form.Item name="title" label="Title" rules={[{ required: true, message: 'Please enter a title' }]}><Input /></Form.Item>
+              <Form.Item name="description" label="Description" rules={[{ required: true, message: 'Please enter a description' }]}><Input.TextArea rows={3} /></Form.Item>
+              <Form.Item name="due_date" label="Due Date"><DatePicker style={{ width: '100%' }} /></Form.Item>
+              <Form.Item name="priority" label="Priority" rules={[{ required: true, message: 'Please select a priority' }]}><Select options={[{ value: 'High' }, { value: 'Medium' }, { value: 'Low' }]} /></Form.Item>
+              <Form.Item name="assigned_to" label="Assign To"><Select mode="multiple" options={renderUserOptions()} /></Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit">Create</Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+          <Modal
+            title="Assign Action Log"
+            open={assignModalVisible}
+            onCancel={() => setAssignModalVisible(false)}
+            footer={null}
+            destroyOnHidden
+          >
+            <Form form={assignForm} layout="vertical" onFinish={handleAssign}>
+              <Form.Item name="assigned_to" label="Assign To" rules={[{ required: true, message: 'Please select at least one user' }]}><Select mode="multiple" options={renderUserOptions()} /></Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit">Assign</Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+          <Modal
+            title="Update Status"
+            open={statusModalVisible}
+            onCancel={() => setStatusModalVisible(false)}
+            footer={null}
+            destroyOnHidden
+          >
+            <Form
+              form={statusForm}
+              onFinish={handleStatusUpdate}
+              layout="vertical"
+            >
+              <Form.Item
+                name="status"
+                label="Status"
+                rules={[{ required: true, message: 'Please select a status' }]}
               >
-                <Form.Item name="title" label="Title" rules={[{ required: true, message: 'Please enter a title' }]}><Input /></Form.Item>
-                <Form.Item name="description" label="Description" rules={[{ required: true, message: 'Please enter a description' }]}><Input.TextArea rows={3} /></Form.Item>
-                <Form.Item name="due_date" label="Due Date"><DatePicker style={{ width: '100%' }} /></Form.Item>
-                <Form.Item name="priority" label="Priority" rules={[{ required: true, message: 'Please select a priority' }]}><Select options={[{ value: 'High' }, { value: 'Medium' }, { value: 'Low' }]} /></Form.Item>
-                <Form.Item name="assigned_to" label="Assign To"><Select mode="multiple" options={renderUserOptions()} /></Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit">Create</Button>
-                </Form.Item>
-              </Form>
-            </Modal>
-            <Modal
-              title="Assign Action Log"
-              open={assignModalVisible}
-              onCancel={() => setAssignModalVisible(false)}
-              footer={null}
-              destroyOnHidden
-            >
-              <Form form={assignForm} layout="vertical" onFinish={handleAssign}>
-                <Form.Item name="assigned_to" label="Assign To" rules={[{ required: true, message: 'Please select at least one user' }]}><Select mode="multiple" options={renderUserOptions()} /></Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit">Assign</Button>
-                </Form.Item>
-              </Form>
-            </Modal>
-            <Modal
-              title="Update Status"
-              open={statusModalVisible}
-              onCancel={() => setStatusModalVisible(false)}
-              footer={null}
-              destroyOnHidden
-            >
-              <Form
-                form={statusForm}
-                onFinish={handleStatusUpdate}
-                layout="vertical"
+                <Select>
+                  <Select.Option value="open">Open</Select.Option>
+                  <Select.Option value="in_progress">In Progress</Select.Option>
+                  <Select.Option value="closed">Closed</Select.Option>
+                </Select>
+              </Form.Item>
+
+              <Form.Item
+                name="status_comment"
+                label="Comment"
+                rules={[{ required: true, message: 'Please enter a comment' }]}
               >
-                <Form.Item
-                  name="status"
-                  label="Status"
-                  rules={[{ required: true, message: 'Please select a status' }]}
-                >
-                  <Select>
-                    <Select.Option value="open">Open</Select.Option>
-                    <Select.Option value="in_progress">In Progress</Select.Option>
-                    <Select.Option value="closed">Closed</Select.Option>
-                  </Select>
-                </Form.Item>
+                <Input.TextArea rows={4} />
+              </Form.Item>
 
-                <Form.Item
-                  name="status_comment"
-                  label="Comment"
-                  rules={[{ required: true, message: 'Please enter a comment' }]}
-                >
-                  <Input.TextArea rows={4} />
-                </Form.Item>
-
-                <Form.Item>
-                  <Button type="primary" htmlType="submit">
-                    Update Status
-                  </Button>
-                </Form.Item>
-              </Form>
-            </Modal>
-            <Modal
-              title="Approve Action Log"
-              open={approvalModalVisible}
-              onCancel={() => setApprovalModalVisible(false)}
-              footer={null}
-              destroyOnHidden
-            >
-              <Form form={approvalForm} layout="vertical" onFinish={handleApprove}>
-                <Form.Item name="approval_comment" label="Approval Comment"> <Input.TextArea rows={3} /> </Form.Item>
-                <Form.Item>
-                  <Button type="primary" htmlType="submit">Approve</Button>
-                </Form.Item>
-              </Form>
-            </Modal>
-            <Modal
-              title="Comments"
-              open={commentsModalVisible}
-              onCancel={() => setCommentsModalVisible(false)}
-              footer={null}
-              width={700}
-              destroyOnHidden
-            >
-              <Spin spinning={commentsLoading}>
-                <div style={{ maxHeight: 400, overflowY: 'auto', marginBottom: 16 }}>
-                  {selectedLogComments.map(comment => (
-                    <div key={comment.id} style={{ marginBottom: '16px' }}>
-                      {renderComment(comment, undefined, true)}
-                    </div>
-                  ))}
-                </div>
-                {replyingTo && (
+              <Form.Item>
+                <Button type="primary" htmlType="submit">
+                  Update Status
+                </Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+          <Modal
+            title="Approve Action Log"
+            open={approvalModalVisible}
+            onCancel={() => setApprovalModalVisible(false)}
+            footer={null}
+            destroyOnHidden
+          >
+            <Form form={approvalForm} layout="vertical" onFinish={handleApprove}>
+              <Form.Item name="approval_comment" label="Approval Comment"> <Input.TextArea rows={3} /> </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit">Approve</Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+          <Modal
+            title="Comments"
+            open={commentsModalVisible}
+            onCancel={() => setCommentsModalVisible(false)}
+            footer={null}
+            width={700}
+            destroyOnHidden
+          >
+            <Spin spinning={commentsLoading}>
+              <div style={{ maxHeight: 400, overflowY: 'auto', marginBottom: 16 }}>
+                {selectedLogComments.map(comment => (
+                  <div key={comment.id}>
+                    {renderComment(comment)}
+                  </div>
+                ))}
+              </div>
+              {/* Reply input (only when replyingTo is set) */}
+              {replyingTo ? (
+                <>
                   <div style={{ marginBottom: 8, background: '#f0f7ff', padding: 8, borderRadius: 4 }}>
                     Replying to: <strong>{replyingTo.user.first_name} {replyingTo.user.last_name}</strong>
                     <Button type="link" size="small" onClick={handleCancelReply} style={{ marginLeft: 8 }}>Cancel</Button>
                   </div>
-                )}
+                  <Input.TextArea
+                    value={newComment}
+                    onChange={e => setNewComment(e.target.value)}
+                    rows={2}
+                    placeholder="Add a reply..."
+                    style={{ marginBottom: 8 }}
+                  />
+                  <Button
+                    type="primary"
+                    onClick={handleAddComment}
+                    loading={submittingComment}
+                    disabled={!newComment.trim()}
+                  >
+                    Reply
+                  </Button>
+                </>
+              ) : (
+                <>
                 <Input.TextArea
                   value={newComment}
                   onChange={e => setNewComment(e.target.value)}
@@ -1823,13 +1799,14 @@ const EconomistDashboard: React.FC = () => {
                 >
                   Add Comment
                 </Button>
-              </Spin>
-            </Modal>
-          </div>
+              </>
+            )}
+            </Spin>
+          </Modal>
         </Content>
       </Layout>
     </Layout>
   );
 };
 
-export default EconomistDashboard;
+export default EconomistDashboard; 

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ActionLog, ActionLogAssignmentHistory
+from .models import ActionLog, ActionLogAssignmentHistory, ActionLogNotification, ActionLogComment
 from users.serializers import UserSerializer
 from departments.serializers import DepartmentSerializer
 from departments.models import Department
@@ -21,14 +21,16 @@ class ActionLogSerializer(serializers.ModelSerializer):
     )
     can_approve = serializers.SerializerMethodField()
     comment_count = serializers.SerializerMethodField()
+    created_by_department_unit = serializers.SerializerMethodField()
 
     class Meta:
         model = ActionLog
         fields = [
             'id', 'title', 'description', 'department', 'department_id',
-            'created_by', 'status', 'priority', 'due_date', 'assigned_to',
-            'approved_by', 'approved_at', 'rejection_reason', 
-            'created_at', 'updated_at', 'can_approve', 'comment_count'
+            'created_by', 'created_by_department_unit', 'status', 'priority', 
+            'due_date', 'assigned_to', 'approved_by', 'approved_at', 
+            'rejection_reason', 'created_at', 'updated_at', 'can_approve', 
+            'comment_count'
         ]
         read_only_fields = [
             'created_by', 'approved_by', 'approved_at',
@@ -43,6 +45,14 @@ class ActionLogSerializer(serializers.ModelSerializer):
 
     def get_comment_count(self, obj):
         return obj.comments.count()
+
+    def get_created_by_department_unit(self, obj):
+        if obj.created_by and obj.created_by.department_unit:
+            return {
+                'id': obj.created_by.department_unit.id,
+                'name': obj.created_by.department_unit.name
+            }
+        return None
 
     def create(self, validated_data):
         request = self.context.get('request')
@@ -121,6 +131,45 @@ class ActionLogAssignmentHistorySerializer(serializers.ModelSerializer):
             return data
         except Exception as e:
             print(f"Error serializing assignment history record {instance.id}: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            raise
+
+class ActionLogNotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ActionLogNotification
+        fields = ['id', 'user', 'action_log', 'comment', 'is_read', 'created_at']
+        read_only_fields = ['id', 'user', 'action_log', 'comment', 'is_read', 'created_at']
+
+class ActionLogCommentSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    replies = serializers.SerializerMethodField()
+    parent_id = serializers.IntegerField(write_only=True, required=False)
+
+    class Meta:
+        model = ActionLogComment
+        fields = ['id', 'action_log', 'user', 'comment', 'created_at', 'updated_at', 'parent_id', 'replies']
+        read_only_fields = ['id', 'user', 'created_at', 'updated_at']
+
+    def get_replies(self, obj):
+        replies = obj.replies.all().select_related('user').order_by('created_at')
+        return ActionLogCommentSerializer(replies, many=True).data
+
+    def to_representation(self, instance):
+        try:
+            data = super().to_representation(instance)
+            # Ensure all required fields are present
+            if 'user' in data and not data['user'].get('email'):
+                data['user']['email'] = ''
+            if 'status' not in data:
+                data['status'] = 'open'
+            if 'is_approved' not in data:
+                data['is_approved'] = False
+            if 'is_viewed' not in data:
+                data['is_viewed'] = False
+            return data
+        except Exception as e:
+            print(f"Error serializing comment {instance.id}: {str(e)}")
             import traceback
             print(f"Traceback: {traceback.format_exc()}")
             raise 

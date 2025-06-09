@@ -74,20 +74,21 @@ class ActionLog(models.Model):
         self.save()
 
 class ActionLogComment(models.Model):
-    action_log = models.ForeignKey(ActionLog, on_delete=models.CASCADE, related_name='comments')
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='action_log_comments')
+    action_log = models.ForeignKey('ActionLog', on_delete=models.CASCADE, related_name='comments')
+    user = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='action_log_comments')
     comment = models.TextField()
-    parent_comment = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies')
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
+    status = models.CharField(max_length=20, null=True, blank=True)
+    is_approved = models.BooleanField(default=False)
+    is_viewed = models.BooleanField(default=False)
+    parent_comment = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies')
 
     class Meta:
-        ordering = ['created_at']
-        verbose_name = 'Action Log Comment'
-        verbose_name_plural = 'Action Log Comments'
+        ordering = ['-created_at']
 
     def __str__(self):
-        return f"Comment by {self.user.get_full_name() if self.user else 'Unknown'} on {self.action_log}"
+        return f"Comment by {self.user.first_name} {self.user.last_name} on {self.action_log.title}"
 
     def get_user_email(self):
         return self.user.email if self.user else None
@@ -166,7 +167,7 @@ class AuditLog(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.action} by {self.user.get_full_name()} on {self.action_log.title}"
+        return f"{self.action} by {self.user.get_full_name()} on {self.action_log.title}" 
 
 class ActionLogAssignmentHistory(models.Model):
     action_log = models.ForeignKey(
@@ -195,4 +196,19 @@ class ActionLogAssignmentHistory(models.Model):
         return f"Assignment by {self.assigned_by.get_full_name()} at {self.assigned_at}"
 
     def get_assigned_to_users(self):
-        return self.assigned_to.all() 
+        return self.assigned_to.all()
+
+class ActionLogNotification(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='action_log_notifications')
+    action_log = models.ForeignKey(ActionLog, on_delete=models.CASCADE, related_name='action_log_notifications')
+    comment = models.ForeignKey('ActionLogComment', on_delete=models.CASCADE, null=True, blank=True, related_name='notifications')
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'Action Log Notification'
+        verbose_name_plural = 'Action Log Notifications'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Notification for {self.user.get_full_name()} on log {self.action_log.id}" 
