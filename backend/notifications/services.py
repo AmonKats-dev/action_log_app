@@ -9,7 +9,7 @@ class SMSNotificationService:
     def __init__(self):
         self.client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
         self.from_number = settings.TWILIO_PHONE_NUMBER
-        print(f"Initializing SMS service with from_number: {self.from_number}")
+        logger.info("SMS notification service initialized")
 
     def send_notification(self, to_number, message):
         """
@@ -23,17 +23,16 @@ class SMSNotificationService:
             from_number = self.from_number.lstrip('+')
             to_number = to_number.lstrip('+')
             
-            print(f"Attempting to send SMS from {from_number} to {to_number}")
+            logger.info(f"Sending SMS from {from_number} to {to_number}")
             
             message = self.client.messages.create(
                 body=message,
                 from_=f"+{from_number}",
                 to=f"+{to_number}"
             )
-            print(f"SMS sent successfully: {message.sid}")
+            logger.info(f"SMS sent successfully: {message.sid}")
             return True
         except Exception as e:
-            print(f"Error sending SMS: {str(e)}")
             logger.error(f"Error sending SMS: {str(e)}")
             return False
 
@@ -41,7 +40,7 @@ class WhatsAppNotificationService:
     def __init__(self):
         self.client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
         self.from_number = settings.TWILIO_PHONE_NUMBER
-        print(f"Initializing WhatsApp service with from_number: {self.from_number}")
+        logger.info("WhatsApp notification service initialized")
 
     def send_notification(self, to_number, message):
         try:
@@ -51,16 +50,15 @@ class WhatsAppNotificationService:
             # Ensure to_number has country code and no plus sign
             to_number = f"whatsapp:{to_number.lstrip('+')}"
             
-            print(f"Attempting to send WhatsApp message from {from_number} to {to_number}")
+            logger.info(f"Sending WhatsApp message from {from_number} to {to_number}")
             
             message = self.client.messages.create(
                 body=message,
                 from_=from_number,
                 to=to_number
             )
-            print(f"WhatsApp message sent successfully: {message.sid}")
+            logger.info(f"WhatsApp message sent successfully: {message.sid}")
             return True
         except Exception as e:
-            print(f"Error sending WhatsApp message: {str(e)}")
             logger.error(f"Error sending WhatsApp message: {str(e)}")
             return False 

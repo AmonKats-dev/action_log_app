@@ -9,6 +9,9 @@ from users.permissions import can_approve_action_log
 from django.http import Http404
 from users.models import User
 from notifications.services import SMSNotificationService
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ActionLogViewSet(viewsets.ModelViewSet):
     serializer_class = ActionLogSerializer
@@ -144,10 +147,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                 )
 
             if request.method == 'POST':
-                print("\n=== Comment Creation Started ===")
-                print(f"Request method: {request.method}")
-                print(f"Request user: {request.user.id} ({request.user.username})")
-                print(f"Request data: {request.data}")
+                logger.info(f"Creating comment for action log {pk} by user {request.user.id}")
                 
                 parent = None
                 parent_id = request.data.get('parent_id')
@@ -163,18 +163,14 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                     comment=request.data.get('comment'),
                     parent_comment=parent
                 )
-                print(f"Comment created with ID: {comment.id}")
+                logger.info(f"Comment {comment.id} created successfully")
                 
                 # Create notifications
-                print("\n=== Creating Notifications ===")
                 notified_user_ids = set()
-                print(f"Sender user ID: {request.user.id}")
                 
                 # Create notification for assigned users
                 assigned_users = action_log.assigned_to.all()
-                print(f"Number of assigned users: {assigned_users.count()}")
                 for user in assigned_users:
-                    print(f"Checking assigned user: {user.id} ({user.username})")
                     if user != request.user:  # Don't notify the commenter
                         ActionLogNotification.objects.create(
                             user=user,
@@ -182,9 +178,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(user.id)
-                        print(f"Notified assigned user: {user.id} ({user.username})")
-                    else:
-                        print(f"Skipping notification for sender: {user.id} ({user.username})")
+                        logger.info(f"Notification created for assigned user {user.id}")
 
                 # Standard notification logic: assigned users, parent comment author, root comment author
                 # Notify assigned users (except sender)
@@ -196,78 +190,46 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(user.id)
-                        print(f"Notified assigned user: {user.id} ({user.username})")
-                    else:
-                        print(f"Skipping notification for sender or already notified: {user.id} ({user.username})")
+                        logger.info(f"Notification created for assigned user {user.id}")
 
                 # If this is a reply, notify the parent comment's author and root/original comment's author
-                if parent_id:
-                    try:
-                        parent_comment = ActionLogComment.objects.get(id=parent_id)
-                        parent_author = parent_comment.user
-                        print(f"[DEBUG] Parent author: {parent_author.id} ({parent_author.username})")
-                        print(f"[DEBUG] Sender: {request.user.id} ({request.user.username})")
-                        if parent_author != request.user and parent_author.id not in notified_user_ids:
-                            ActionLogNotification.objects.create(
-                                user=parent_author,
-                                action_log=action_log,
-                                comment=comment
-                            )
-                            notified_user_ids.add(parent_author.id)
-                            print(f"[DEBUG] Notified parent comment author: {parent_author.id} ({parent_author.username})")
-                        else:
-                            print(f"[DEBUG] Skipping parent author notification - already notified or is sender")
-                        # Traverse up to the root/original comment
-                        root_comment = parent_comment
-                        while root_comment.parent_comment:
-                            root_comment = root_comment.parent_comment
-                        root_author = root_comment.user
-                        print(f"[DEBUG] Root author: {root_author.id} ({root_author.username})")
-                        if root_author != request.user:
-                            ActionLogNotification.objects.create(
-                                user=root_author,
-                                action_log=action_log,
-                                comment=comment
-                            )
-                            notified_user_ids.add(root_author.id)
-                            print(f"[DEBUG] Notified root/original comment author: {root_author.id} ({root_author.username})")
-                        else:
-                            print(f"[DEBUG] Skipping root author notification - is sender")
-                    except ActionLogComment.DoesNotExist:
-                        print("[DEBUG] Parent comment does not exist for notification.")
-                        pass
+                if parent:
+                    parent_author = parent.user
+                    if parent_author != request.user and parent_author.id not in notified_user_ids:
+                        ActionLogNotification.objects.create(
+                            user=parent_author,
+                            action_log=action_log,
+                            comment=comment
+                        )
+                        notified_user_ids.add(parent_author.id)
+                        logger.info(f"Notification created for parent comment author {parent_author.id}")
 
-                print("\n=== Comment Creation Completed ===")
-                print(f"Total users notified: {len(notified_user_ids)}")
-                print(f"Notified user IDs: {notified_user_ids}")
-                
-                serializer = ActionLogCommentSerializer(comment)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
+                    # Notify root comment author if different from parent author
+                    root_comment = parent
+                    while root_comment.parent_comment:
+                        root_comment = root_comment.parent_comment
+                    
+                    root_author = root_comment.user
+                    if root_author != request.user and root_author.id not in notified_user_ids:
+                        ActionLogNotification.objects.create(
+                            user=root_author,
+                            action_log=action_log,
+                            comment=comment
+                        )
+                        notified_user_ids.add(root_author.id)
+                        logger.info(f"Notification created for root comment author {root_author.id}")
 
-            # GET method - return all comments
-            print(f"Fetching comments for action log {pk}")
+                return Response(ActionLogCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
             
-            # Get all comments for the log with their replies
-            comments = ActionLogComment.objects.filter(
-                action_log_id=pk,
-                parent_comment=None  # Get only top-level comments
-            ).select_related('user').prefetch_related(
-                'replies',
-                'replies__user'
-            ).order_by('-created_at')
-            
-            print(f"Found {comments.count()} top-level comments")
-            
+            # GET request - return all comments
+            comments = ActionLogComment.objects.filter(action_log=action_log, parent_comment=None).select_related('user')
             serializer = ActionLogCommentSerializer(comments, many=True)
-            print(f"Serialized comments: {serializer.data}")
             return Response(serializer.data)
-
+            
         except Exception as e:
-            import traceback
-            print(f"Error in comments view: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error in comments action: {str(e)}")
             return Response(
-                {'error': str(e)},
+                {'error': 'An error occurred while processing your request'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -308,11 +270,9 @@ class ActionLogViewSet(viewsets.ModelViewSet):
             
             return Response({'message': 'Comments marked as viewed'})
         except Exception as e:
-            import traceback
-            print(f"Error in mark_comments_viewed: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error in mark_comments_viewed: {str(e)}")
             return Response(
-                {'error': str(e)},
+                {'error': 'An error occurred while processing your request'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -409,35 +369,30 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        print("\n=== Comment Creation Started ===")
-        print(f"Request method: {self.request.method}")
-        print(f"Request user: {self.request.user.id} ({self.request.user.username})")
-        print(f"Request data: {self.request.data}")
+        logger.info(f"Creating comment for action log {self.request.data.get('action_log')} by user {self.request.user.id}")
         
         action_log_id = self.request.data.get('action_log')
         parent_id = self.request.data.get('parent_comment_id')
         
-        print(f"Action log ID: {action_log_id}")
-        print(f"Parent comment ID: {parent_id}")
+        logger.info(f"Action log ID: {action_log_id}")
+        logger.info(f"Parent comment ID: {parent_id}")
         
         try:
             action_log = ActionLog.objects.get(id=action_log_id)
-            print(f"Found action log: {action_log.id} - {action_log.title}")
+            logger.info(f"Found action log: {action_log.id} - {action_log.title}")
             
             # Save the comment
             comment = serializer.save(user=self.request.user, action_log=action_log)
-            print(f"Comment created with ID: {comment.id}")
+            logger.info(f"Comment {comment.id} created successfully")
             
             # Create notifications
-            print("\n=== Creating Notifications ===")
             notified_user_ids = set()
-            print(f"Sender user ID: {self.request.user.id}")
             
             # Create notification for assigned users
             assigned_users = action_log.assigned_to.all()
-            print(f"Number of assigned users: {assigned_users.count()}")
+            logger.info(f"Number of assigned users: {assigned_users.count()}")
             for user in assigned_users:
-                print(f"Checking assigned user: {user.id} ({user.username})")
+                logger.info(f"Checking assigned user: {user.id} ({user.username})")
                 if user != self.request.user:  # Don't notify the commenter
                     ActionLogNotification.objects.create(
                         user=user,
@@ -445,9 +400,9 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                         comment=comment
                     )
                     notified_user_ids.add(user.id)
-                    print(f"Notified assigned user: {user.id} ({user.username})")
+                    logger.info(f"Notification created for assigned user {user.id}")
                 else:
-                    print(f"Skipping notification for sender: {user.id} ({user.username})")
+                    logger.info(f"Skipping notification for sender: {user.id} ({user.username})")
 
             # Standard notification logic: assigned users, parent comment author, root comment author
             # Notify assigned users (except sender)
@@ -459,17 +414,15 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                         comment=comment
                     )
                     notified_user_ids.add(user.id)
-                    print(f"Notified assigned user: {user.id} ({user.username})")
-                else:
-                    print(f"Skipping notification for sender or already notified: {user.id} ({user.username})")
+                    logger.info(f"Notification created for assigned user {user.id}")
 
             # If this is a reply, notify the parent comment's author and root/original comment's author
             if parent_id:
                 try:
                     parent_comment = ActionLogComment.objects.get(id=parent_id)
                     parent_author = parent_comment.user
-                    print(f"[DEBUG] Parent author: {parent_author.id} ({parent_author.username})")
-                    print(f"[DEBUG] Sender: {self.request.user.id} ({self.request.user.username})")
+                    logger.info(f"Parent author: {parent_author.id} ({parent_author.username})")
+                    logger.info(f"Sender: {self.request.user.id} ({self.request.user.username})")
                     if parent_author != self.request.user and parent_author.id not in notified_user_ids:
                         ActionLogNotification.objects.create(
                             user=parent_author,
@@ -477,15 +430,15 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(parent_author.id)
-                        print(f"[DEBUG] Notified parent comment author: {parent_author.id} ({parent_author.username})")
+                        logger.info(f"Notification created for parent comment author {parent_author.id}")
                     else:
-                        print(f"[DEBUG] Skipping parent author notification - already notified or is sender")
+                        logger.info(f"Skipping parent author notification - already notified or is sender")
                     # Traverse up to the root/original comment
                     root_comment = parent_comment
                     while root_comment.parent_comment:
                         root_comment = root_comment.parent_comment
                     root_author = root_comment.user
-                    print(f"[DEBUG] Root author: {root_author.id} ({root_author.username})")
+                    logger.info(f"Root author: {root_author.id} ({root_author.username})")
                     if root_author != self.request.user:
                         ActionLogNotification.objects.create(
                             user=root_author,
@@ -493,17 +446,16 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(root_author.id)
-                        print(f"[DEBUG] Notified root/original comment author: {root_author.id} ({root_author.username})")
+                        logger.info(f"Notification created for root comment author {root_author.id}")
                     else:
-                        print(f"[DEBUG] Skipping root author notification - is sender")
+                        logger.info(f"Skipping root author notification - is sender")
                 except ActionLogComment.DoesNotExist:
-                    print("[DEBUG] Parent comment does not exist for notification.")
+                    logger.info("[DEBUG] Parent comment does not exist for notification.")
                     pass
 
-            print("\n=== Comment Creation Completed ===")
-            print(f"Total users notified: {len(notified_user_ids)}")
-            print(f"Notified user IDs: {notified_user_ids}")
+            logger.info(f"Total users notified: {len(notified_user_ids)}")
+            logger.info(f"Notified user IDs: {notified_user_ids}")
             
         except ActionLog.DoesNotExist:
-            print(f"Action log not found: {action_log_id}")
+            logger.error(f"Action log not found: {action_log_id}")
             raise Http404("Action log not found") 
