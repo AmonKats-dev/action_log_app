@@ -8,6 +8,7 @@ from .serializers import ActionLogSerializer, ActionLogApprovalSerializer, Actio
 from users.permissions import can_approve_action_log
 from django.http import Http404
 from users.models import User
+from notifications.services import SMSNotificationService
 
 class ActionLogViewSet(viewsets.ModelViewSet):
     serializer_class = ActionLogSerializer
@@ -30,7 +31,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         instance = serializer.save(created_by=self.request.user)
-        # If assigned_to is set, create assignment history
+        # If assigned_to is set, create assignment history and send notifications
         assigned_to_ids = self.request.data.get('assigned_to', [])
         if assigned_to_ids:
             assignment_history = ActionLogAssignmentHistory.objects.create(
@@ -39,6 +40,30 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                 comment=self.request.data.get('comment', '')
             )
             assignment_history.assigned_to.set(assigned_to_ids)
+            
+            # Get assignee names
+            assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in assigned_to_ids]
+            assignees_text = ", ".join(assignee_names)
+            
+            # Send SMS notifications to assigned users
+            sms_service = SMSNotificationService()
+            for user_id in assigned_to_ids:
+                try:
+                    user = User.objects.get(id=user_id)
+                    if user.phone_number:
+                        message = (
+                            f"You've been assigned an Action Log\n\n"
+                            f"Title: {instance.title}\n"
+                            f"Department: PAP\n"
+                            f"Priority: {instance.priority}\n"
+                            f"Due Date: {instance.due_date.strftime('%Y-%m-%d')}\n"
+                            f"Assignee(s): {assignees_text}\n"
+                            f"Assigned By: {self.request.user.get_full_name()}\n\n"
+                            f"Please check your dashboard for more details."
+                        )
+                        sms_service.send_notification(user.phone_number, message)
+                except User.DoesNotExist:
+                    continue
 
     def update(self, request, *args, **kwargs):
         # Get the comment from the request data
@@ -57,6 +82,30 @@ class ActionLogViewSet(viewsets.ModelViewSet):
             )
             # Add the assigned users
             assignment_history.assigned_to.set(request.data['assigned_to'])
+            
+            # Get assignee names
+            assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in request.data['assigned_to']]
+            assignees_text = ", ".join(assignee_names)
+            
+            # Send SMS notifications to newly assigned users
+            sms_service = SMSNotificationService()
+            for user_id in request.data['assigned_to']:
+                try:
+                    user = User.objects.get(id=user_id)
+                    if user.phone_number:
+                        message = (
+                            f"Action Log Assignment Update\n\n"
+                            f"Title: {instance.title}\n"
+                            f"Department: PAP\n"
+                            f"Priority: {instance.priority}\n"
+                            f"Due Date: {instance.due_date.strftime('%Y-%m-%d')}\n"
+                            f"Assignee(s): {assignees_text}\n"
+                            f"Assigned By: {request.user.get_full_name()}\n\n"
+                            f"Please check your dashboard for more details."
+                        )
+                        sms_service.send_notification(user.phone_number, message)
+                except User.DoesNotExist:
+                    continue
         
         # Perform the update
         serializer = self.get_serializer(instance, data=request.data, partial=True)
