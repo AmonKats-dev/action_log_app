@@ -64,33 +64,41 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                             f"Assigned By: {self.request.user.get_full_name()}\n\n"
                             f"Please check your dashboard for more details."
                         )
-                        sms_service.send_notification(user.phone_number, message)
+                        sms_sent = sms_service.send_notification(user.phone_number, message)
+                        if not sms_sent:
+                            logger.warning(f"Failed to send SMS notification to user {user.id} for action log {instance.id}")
                 except User.DoesNotExist:
+                    logger.warning(f"User with ID {user_id} not found when sending SMS notification")
                     continue
 
     def update(self, request, *args, **kwargs):
-        # Get the comment from the request data
         comment_text = request.data.pop('comment', None)
-        
-        # Get the current instance
         instance = self.get_object()
-        
-        # Check if assigned_to is being updated
+        status_changed = False
+        old_status = instance.status
+        user = request.user
+        # --- Closure Approval Workflow ---
+        if 'status' in request.data and request.data['status'] == 'closed' and old_status != 'closed':
+            # Initiate closure approval workflow
+            instance.closure_approval_stage = 'unit_head'
+            instance.closure_requested_by = user
+            instance.status = 'pending_approval'  # Set to pending_approval until final approval
+            instance.save()
+            status_changed = True
+            # Remove status from request data to prevent overwriting
+            request.data.pop('status', None)
+        elif 'status' in request.data and request.data['status'] != old_status:
+            status_changed = True
+        # ... (rest of assignment logic unchanged) ...
         if 'assigned_to' in request.data:
-            # Create assignment history record
             assignment_history = ActionLogAssignmentHistory.objects.create(
                 action_log=instance,
                 assigned_by=request.user,
                 comment=comment_text
             )
-            # Add the assigned users
             assignment_history.assigned_to.set(request.data['assigned_to'])
-            
-            # Get assignee names
             assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in request.data['assigned_to']]
             assignees_text = ", ".join(assignee_names)
-            
-            # Send SMS notifications to newly assigned users
             sms_service = SMSNotificationService()
             for user_id in request.data['assigned_to']:
                 try:
@@ -106,23 +114,22 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                             f"Assigned By: {request.user.get_full_name()}\n\n"
                             f"Please check your dashboard for more details."
                         )
-                        sms_service.send_notification(user.phone_number, message)
+                        sms_sent = sms_service.send_notification(user.phone_number, message)
+                        if not sms_sent:
+                            logger.warning(f"Failed to send SMS notification to user {user.id} for action log {instance.id}")
                 except User.DoesNotExist:
+                    logger.warning(f"User with ID {user_id} not found when sending SMS notification")
                     continue
-        
-        # Perform the update
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
-        
-        # If there's a comment, create a new comment record
-        if comment_text:
+        if comment_text or status_changed:
             ActionLogComment.objects.create(
                 action_log=instance,
                 user=request.user,
-                comment=comment_text
+                comment=comment_text,
+                status=instance.status
             )
-        
         return Response(serializer.data)
 
     @action(detail=True, methods=['get', 'post'])
@@ -279,15 +286,41 @@ class ActionLogViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         action_log = self.get_object()
-        
-        if not can_approve_action_log(request.user, action_log):
+        user = request.user
+        logger.info(f"[APPROVE] User {user.id} ({user.get_full_name()}) attempting to approve log {action_log.id} at stage {action_log.closure_approval_stage}")
+        # --- Closure Approval Workflow ---
+        if action_log.closure_approval_stage in ['unit_head', 'assistant_commissioner', 'commissioner']:
+            prev_stage = action_log.closure_approval_stage
+            # Move to next stage or close
+            if action_log.closure_approval_stage == 'unit_head':
+                action_log.closure_approval_stage = 'assistant_commissioner'
+            elif action_log.closure_approval_stage == 'assistant_commissioner':
+                action_log.closure_approval_stage = 'commissioner'
+            elif action_log.closure_approval_stage == 'commissioner':
+                action_log.closure_approval_stage = 'closed'
+                action_log.status = 'closed'  # Only now set to closed
+            action_log.save()
+            logger.info(f"[APPROVE] Log {action_log.id} stage changed from {prev_stage} to {action_log.closure_approval_stage}")
+            # Add approval comment
+            comment_text = request.data.get('comment', '')
+            if comment_text:
+                ActionLogComment.objects.create(
+                    action_log=action_log,
+                    user=user,
+                    comment=comment_text,
+                    status=action_log.status,
+                    is_approved=True
+                )
+            return Response(self.get_serializer(action_log).data, status=status.HTTP_200_OK)
+        # --- Default approval logic ---
+        if not can_approve_action_log(user, action_log):
+            logger.warning(f"[APPROVE] User {user.id} ({user.get_full_name()}) with role {user.role.name} is NOT authorized to approve log {action_log.id} at stage {action_log.closure_approval_stage}")
             return Response(
                 {"detail": "You don't have permission to approve this action log"},
                 status=status.HTTP_403_FORBIDDEN
             )
-
         try:
-            action_log.approve(request.user)
+            action_log.approve(user)
             return Response(
                 self.get_serializer(action_log).data,
                 status=status.HTTP_200_OK
@@ -301,20 +334,55 @@ class ActionLogViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
         action_log = self.get_object()
+        user = request.user
+        # --- Closure Approval Workflow ---
+        if action_log.closure_approval_stage in ['assistant_commissioner', 'commissioner']:
+            # Move down a stage
+            if action_log.closure_approval_stage == 'assistant_commissioner':
+                action_log.closure_approval_stage = 'unit_head'
+            elif action_log.closure_approval_stage == 'commissioner':
+                action_log.closure_approval_stage = 'assistant_commissioner'
+            action_log.status = 'in_progress'
+            action_log.save()
+            # Add rejection comment
+            comment_text = request.data.get('comment', '')
+            if comment_text:
+                ActionLogComment.objects.create(
+                    action_log=action_log,
+                    user=user,
+                    comment=comment_text,
+                    status=action_log.status,
+                    is_approved=False
+                )
+            return Response(self.get_serializer(action_log).data, status=status.HTTP_200_OK)
+        elif action_log.closure_approval_stage == 'unit_head':
+            # Rejected at unit head, return to requester
+            action_log.closure_approval_stage = 'none'
+            action_log.status = 'in_progress'
+            action_log.save()
+            comment_text = request.data.get('comment', '')
+            if comment_text:
+                ActionLogComment.objects.create(
+                    action_log=action_log,
+                    user=user,
+                    comment=comment_text,
+                    status=action_log.status,
+                    is_approved=False
+                )
+            return Response(self.get_serializer(action_log).data, status=status.HTTP_200_OK)
+        # --- Default rejection logic ---
         serializer = ActionLogApprovalSerializer(
             data=request.data,
             context={'request': request, 'action_log': action_log}
         )
-
         if not serializer.is_valid():
             return Response(
                 serializer.errors,
                 status=status.HTTP_400_BAD_REQUEST
             )
-
         try:
             action_log.reject(
-                request.user,
+                user,
                 serializer.validated_data.get('rejection_reason', '')
             )
             return Response(
@@ -325,7 +393,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
-            ) 
+            )
 
     @action(detail=True, methods=['get'])
     def assignment_history(self, request, pk=None):

@@ -5,8 +5,8 @@ import { departmentService } from '../../../services/departmentService';
 import { userService } from '../../../services/userService';
 import { ActionLog, ActionLogStatus, ActionLogUpdate, CreateActionLogData, ActionLogPriority, ApprovalStatus, ActionLogComment } from '../../../types/actionLog';
 import { Department, DepartmentUnit } from '../../../types/department';
-import { Button, Card, Table, Modal, Form, Input, message, Space, Tag, Select, DatePicker, Layout, Menu, Avatar, Tooltip, Timeline, Spin, Badge, Tabs, Upload, List, Descriptions, Divider } from 'antd';
-import { PlusOutlined, CheckOutlined, FilterOutlined, UserAddOutlined, UserOutlined, FileTextOutlined, FormOutlined, TeamOutlined, SettingOutlined, ClockCircleOutlined, CalendarOutlined, CommentOutlined, ClusterOutlined, UploadOutlined, EyeOutlined, UserSwitchOutlined, EditOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Button, Card, Table, Modal, Form, Input, message, Space, Tag, Select, DatePicker, Layout, Menu, Avatar, Tooltip, Timeline, Spin, Badge, Tabs, Upload, List, Descriptions, Divider, Dropdown } from 'antd';
+import { PlusOutlined, CheckOutlined, FilterOutlined, UserAddOutlined, UserOutlined, FileTextOutlined, FormOutlined, TeamOutlined, SettingOutlined, ClockCircleOutlined, CalendarOutlined, CommentOutlined, ClusterOutlined, UploadOutlined, EyeOutlined, UserSwitchOutlined, EditOutlined, CheckCircleOutlined, CloseOutlined, DownloadOutlined } from '@ant-design/icons';
 import { format, differenceInDays, isPast, isToday } from 'date-fns';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { User } from '../../../types/user';
@@ -91,7 +91,7 @@ const EconomistDashboard: React.FC = () => {
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [selectedMenuKey, setSelectedMenuKey] = useState('actionLogs');
+  const [selectedMenuKey, setSelectedMenuKey] = useState('assignedToMe');
   const [showAssignedOnly, setShowAssignedOnly] = useState(false);
   const [commentsModalVisible, setCommentsModalVisible] = useState(false);
   const [selectedLogComments, setSelectedLogComments] = useState<ActionLogComment[]>([]);
@@ -120,12 +120,29 @@ const EconomistDashboard: React.FC = () => {
   const [notificationCount, setNotificationCount] = useState<number>(0);
   const [assignmentHistory, setAssignmentHistory] = useState<ActionLogAssignmentHistory[]>([]);
   const [unreadCounts, setUnreadCounts] = useState<{ [logId: number]: number }>({});
+  const [creating, setCreating] = useState(false);
+  const [rejectModalVisible, setRejectModalVisible] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  // State for unit filter
+  const [unitFilter, setUnitFilter] = useState<'all' | number>(user?.department_unit?.id || 'all');
 
   // Add these variables at the component level
-  const isUnitHead = user?.designation?.toLowerCase().includes('head') || 
-                    (user?.designation?.match(/^[A-Z]{2,3}\d+\/PAP$/) && user?.designation?.toLowerCase().includes('1'));
-  const isCommissioner = user?.role?.name?.toLowerCase() === 'commissioner';
-  const isAssistantCommissioner = user?.role?.name?.toLowerCase() === 'assistant_commissioner';
+  const userDesignation = (user?.designation || '').toLowerCase();
+  const userRoleName = (user?.role?.name || '').toLowerCase();
+  console.log('User designation:', user?.designation, 'User role:', user?.role?.name);
+  console.log('userDesignation:', userDesignation, 'Regex match:', /^[a-z]{2,3}\d*\/pap$/i.test(userDesignation));
+  const regexMatch = /^[a-z]{2,3}\d*\/pap$/i.test(userDesignation);
+  const isUnitHead = userDesignation.includes('head') || userRoleName.includes('unit_head') || regexMatch;
+  const isAssistantCommissioner = userRoleName.includes('assistant_commissioner');
+  const isCommissioner = userRoleName.includes('commissioner');
+
+  // Ensure unitFilter updates when user loads
+  useEffect(() => {
+    if (user?.department_unit?.id) {
+      setUnitFilter(user.department_unit.id);
+    }
+  }, [user]);
 
   useEffect(() => {
     const initializeData = async () => {
@@ -158,22 +175,33 @@ const EconomistDashboard: React.FC = () => {
     initializeData();
   }, [user]);
 
+  // On mount, default to 'Assigned To Me' view
+  useEffect(() => {
+    setShowAssignedOnly(true);
+    setStatusFilter('');
+    setSelectedMenuKey('assignedToMe');
+  }, []);
+
   const fetchActionLogs = async () => {
     try {
       console.log('Fetching action logs...');
       const response = await actionLogService.getAll();
-      console.log('Action logs API response:', response);
+      console.log('Raw API response:', response);
       
       const logsArray = Array.isArray(response) ? response : [];
       console.log('Processed logs array:', logsArray);
       
       // Filter logs based on user's role and unit
       const filteredLogs = logsArray.filter(log => {
-        console.log('Checking log:', log);
-        console.log('User role:', user?.role?.name);
-        console.log('User department unit:', user?.department_unit);
-        console.log('Log created by department unit:', log.created_by?.department_unit);
-        console.log('Log assigned to:', log.assigned_to);
+        console.log('Checking log:', {
+          id: log.id,
+          status: log.status,
+          closure_approval_stage: log.closure_approval_stage,
+          created_by_unit: log.created_by?.department_unit?.id,
+          user_unit: user?.department_unit?.id,
+          assigned_to: log.assigned_to,
+          user_id: user?.id
+        });
         
         // If user is Commissioner or Assistant Commissioner, they can see all logs
         if (user?.role?.name?.toLowerCase() === 'commissioner' || 
@@ -189,10 +217,16 @@ const EconomistDashboard: React.FC = () => {
         if (isUnitHead) {
           const isInUserUnit = log.created_by?.department_unit?.id === user?.department_unit?.id;
           const isAssignedToUser = log.assigned_to?.includes(user?.id);
-          console.log('User is unit head:', isUnitHead);
-          console.log('Is in user unit:', isInUserUnit);
-          console.log('Is assigned to user:', isAssignedToUser);
-          return isInUserUnit || isAssignedToUser;
+          const isPendingApproval = log.closure_approval_stage === 'unit_head' && log.status === 'in_progress';
+          console.log('Unit Head checks:', {
+            isUnitHead,
+            isInUserUnit,
+            isAssignedToUser,
+            isPendingApproval,
+            logStatus: log.status,
+            closureStage: log.closure_approval_stage
+          });
+          return isInUserUnit || isAssignedToUser || isPendingApproval;
         }
         
         // If user has no department unit, they can't see any logs
@@ -204,13 +238,24 @@ const EconomistDashboard: React.FC = () => {
         // For other roles, check if the log was created in their unit or assigned to them
         const isInUserUnit = log.created_by?.department_unit?.id === user.department_unit.id;
         const isAssignedToUser = log.assigned_to?.includes(user.id);
-        console.log('Is in user unit:', isInUserUnit);
-        console.log('Is assigned to user:', isAssignedToUser);
+        console.log('Regular user checks:', {
+          isInUserUnit,
+          isAssignedToUser,
+          logStatus: log.status,
+          closureStage: log.closure_approval_stage
+        });
         
         return isInUserUnit || isAssignedToUser;
       });
-      console.log('Filtered logs:', filteredLogs);
-
+      
+      console.log('Final filtered logs:', filteredLogs.map(log => ({
+        id: log.id,
+        status: log.status,
+        closure_approval_stage: log.closure_approval_stage,
+        created_by_unit: log.created_by?.department_unit?.id,
+        assigned_to: log.assigned_to
+      })));
+      
       return filteredLogs;
     } catch (error) {
       console.error('Error fetching action logs:', error);
@@ -325,10 +370,12 @@ const EconomistDashboard: React.FC = () => {
   };
 
   const handleCreate = async (values: any) => {
-    console.log('Create Action Log form values:', values);
+    if (creating) return; // Prevent double submit
+    setCreating(true);
     try {
       if (!user) {
         message.error('User not found');
+        setCreating(false);
         return;
       }
 
@@ -367,54 +414,22 @@ const EconomistDashboard: React.FC = () => {
       // Validate required fields
       if (!createData.title || !createData.description || !createData.priority) {
         message.error('Please fill in all required fields');
+        setCreating(false);
         return;
       }
 
-      // For commissioner/assistant_commissioner, if no assigned user, use their own department/unit
-      if ((user.role?.name?.toLowerCase() === 'commissioner' || user.role?.name?.toLowerCase() === 'assistant_commissioner') && assignedTo.length === 0) {
-        createData.department_id = user.department;
-        createData.department_unit = user.department_unit?.id;
-      }
-
-      console.log('Creating action log with data:', createData);
-      
-      const response = await actionLogService.create(createData);
-      message.success('Action log created successfully');
+      // Actually create the log
+      const newLog = await actionLogService.create(createData);
+      // Prepend the new log to the actionLogs state
+      setActionLogs(prevLogs => [newLog, ...prevLogs]);
       setCreateModalVisible(false);
       createForm.resetFields();
-      
-      // Update the action logs list with the new data
-      setActionLogs(prevLogs => [
-        {
-          ...response,
-          assigned_to: assignedTo,
-          status: 'open',
-          created_by: user,
-          department: { 
-            id: departmentId, 
-            name: user.department_name,
-            code: '',
-            description: '',
-            units: [],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          },
-          department_unit: user.department_unit
-        } as ActionLog,
-        ...prevLogs
-      ]);
+      message.success('Action log created successfully');
     } catch (error) {
       console.error('Error creating action log:', error);
-      if (error.response?.data) {
-        console.error('Server error details:', error.response.data);
-        // Handle multiple error fields
-        const errorMessages = Object.entries(error.response.data)
-          .map(([field, messages]) => `${field}: ${Array.isArray(messages) ? messages[0] : messages}`)
-          .join('\n');
-        message.error(`Failed to create action log:\n${errorMessages}`);
-      } else {
-        message.error('Failed to create action log');
-      }
+      message.error('Failed to create action log');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -463,27 +478,52 @@ const EconomistDashboard: React.FC = () => {
     try {
       if (!selectedLog) return;
       
-      // Update the status and add comment
-      await actionLogService.update(selectedLog.id, {
-        status: values.status as ActionLogStatus,
-        comment: values.status_comment
+      console.log('Starting status update for log:', {
+        id: selectedLog.id,
+        currentStatus: selectedLog.status,
+        newStatus: values.status,
+        user: {
+          id: user?.id,
+          role: user?.role?.name,
+          designation: user?.designation,
+          unit: user?.department_unit?.id
+        }
       });
       
-      // Fetch the updated log with comments
-      const updatedLog = await actionLogService.getById(selectedLog.id);
+      // Prepare update data
+      const updateData: ActionLogUpdate = {
+        status: values.status as ActionLogStatus,
+        comment: values.status_comment
+      };
+
+      // If status is being set to closed, initiate the approval workflow
+      if (values.status === 'closed') {
+        updateData.closure_approval_stage = 'unit_head';
+        updateData.closure_requested_by = user?.id || null;
+        console.log('Setting up closure approval workflow:', updateData);
+      }
+      
+      // Update the status and add comment
+      const updatedLog = await actionLogService.update(selectedLog.id, updateData);
+      console.log('Update response:', {
+        id: updatedLog.id,
+        status: updatedLog.status,
+        closure_approval_stage: updatedLog.closure_approval_stage,
+        closure_requested_by: updatedLog.closure_requested_by
+      });
       
       // Update the action logs list with the new data
-      setActionLogs(prevLogs => 
-        prevLogs.map(log => 
+      setActionLogs(prevLogs => {
+        const newLogs = prevLogs.map(log => 
           log.id === selectedLog.id 
             ? { 
                 ...log,
-                ...updatedLog,
-                status: values.status as ActionLogStatus
+                ...updatedLog
               } as ActionLog
             : log
-        )
-      );
+        );
+        return newLogs;
+      });
       
       message.success('Status updated successfully');
       setStatusModalVisible(false);
@@ -493,6 +533,15 @@ const EconomistDashboard: React.FC = () => {
       if (commentsModalVisible && selectedLogComments.length > 0) {
         await fetchComments(selectedLog.id);
       }
+
+      // Refresh the logs list to ensure we have the latest data
+      console.log('Refreshing logs list...');
+      const refreshedLogs = await fetchActionLogs();
+      console.log('Refreshed logs:', refreshedLogs.map(log => ({
+        id: log.id,
+        status: log.status,
+        closure_approval_stage: log.closure_approval_stage
+      })));
     } catch (error) {
       console.error('Error updating status:', error);
       message.error('Failed to update status');
@@ -501,69 +550,89 @@ const EconomistDashboard: React.FC = () => {
 
   const handleApprove = async (values: any) => {
     try {
-      if (!selectedLog) return;
-      
-      if (!selectedLog.can_approve) {
-        message.error('You are not authorized to approve this action log');
+      if (!selectedLog) {
+        console.log('handleApprove: No selectedLog');
         return;
       }
-      
-      console.log('Approval attempt:', {
-        userId: user?.id,
-        userName: `${user?.first_name} ${user?.last_name}`,
-        designation: user?.designation,
-        role: user?.role?.name,
-        departmentUnit: user?.department_unit,
-        logId: selectedLog.id,
-        logUnit: selectedLog.created_by?.department_unit,
-        currentApprovalStatus: selectedLog.approval_status,
-        currentStatus: selectedLog.status,
-        canApprove: selectedLog.can_approve
-      });
-      
-      let approvalStatus: ApprovalStatus = null;
-      const isUnitHead = user.designation?.toLowerCase().includes('head');
-      const isAssistantCommissioner = user.role?.name?.toLowerCase() === 'assistant_commissioner';
-      const isCommissioner = user.role?.name?.toLowerCase() === 'commissioner';
-      
-      // Check if user is in the same unit as the action log
-      const isInSameUnit = selectedLog.created_by?.department_unit?.id === user.department_unit?.id;
-      
-      console.log('Approval checks:', {
+      setApproving(true);
+      const userDesignation = (user?.designation || '').toLowerCase();
+      const userRoleName = (user?.role?.name || '').toLowerCase();
+      const regexMatch = /^[a-z]{2,3}\d*\/pap$/i.test(userDesignation);
+      const isUnitHead = userDesignation.includes('head') || userRoleName.includes('unit_head') || regexMatch;
+      const isAssistantCommissioner = userRoleName.includes('assistant_commissioner');
+      const isCommissioner = userRoleName.includes('commissioner');
+      const isInSameUnit = selectedLog.created_by?.department_unit?.id === user?.department_unit?.id;
+      const isClosureApproval = selectedLog.status === 'pending_approval' &&
+        ((selectedLog.closure_approval_stage === 'unit_head' && isUnitHead && isInSameUnit) ||
+         (selectedLog.closure_approval_stage === 'assistant_commissioner' && isAssistantCommissioner) ||
+         (selectedLog.closure_approval_stage === 'commissioner' && isCommissioner));
+      console.log('User designation:', user?.designation, 'User role:', user?.role?.name);
+      console.log('userDesignation:', userDesignation, 'Regex match:', regexMatch);
+      console.log('handleApprove called', {
+        selectedLog,
+        user,
         isUnitHead,
         isAssistantCommissioner,
         isCommissioner,
         isInSameUnit,
-        userUnit: user.department_unit?.id,
-        logUnit: selectedLog.created_by?.department_unit?.id
+        isClosureApproval
       });
-      
-      if (isUnitHead && isInSameUnit) {
-        approvalStatus = 'unit_head_approved';
-      } else if (isAssistantCommissioner) {
-        approvalStatus = 'assistant_commissioner_approved';
-      } else if (isCommissioner) {
-        approvalStatus = 'commissioner_approved';
-      }
-      
-      if (!approvalStatus) {
+      if (!isClosureApproval && !selectedLog.can_approve) {
+        console.log('handleApprove: Not authorized', { isClosureApproval, can_approve: selectedLog.can_approve });
         message.error('You are not authorized to approve this action log');
+        setApproving(false);
         return;
       }
-      
-      await actionLogService.update(selectedLog.id, {
-        status: 'closed', // Always close the log when approving
+      const approveData: any = {
         comment: values.approval_comment,
-        approval_status: approvalStatus
-      });
-      
+        approval_status: undefined // will be set below
+      };
+      if (isUnitHead && isInSameUnit) {
+        approveData.approval_status = 'unit_head_approved';
+      } else if (isAssistantCommissioner) {
+        approveData.approval_status = 'assistant_commissioner_approved';
+      } else if (isCommissioner) {
+        approveData.approval_status = 'commissioner_approved';
+      }
+      let updatedLog;
+      if (isClosureApproval) {
+        // Use the approve endpoint for closure workflow
+        updatedLog = await actionLogService.approve(selectedLog.id, approveData);
+      } else {
+        // Use update for regular approvals
+        updatedLog = await actionLogService.update(selectedLog.id, approveData);
+      }
+      // Update the log in the UI with the backend response
+      setActionLogs(prevLogs => prevLogs.map(log =>
+        log.id === selectedLog.id ? { ...log, ...updatedLog } : log
+      ));
       message.success('Action log approved successfully');
       setApprovalModalVisible(false);
       approvalForm.resetFields();
-      fetchActionLogs();
+      setApproving(false);
     } catch (error) {
+      setApproving(false);
       console.error('Error approving action log:', error);
       message.error('Failed to approve action log');
+    }
+  };
+
+  const handleReject = async (values: any) => {
+    try {
+      if (!selectedLog) return;
+      setRejecting(true);
+      const rejectData = { reason: values.rejection_comment };
+      const updatedLog = await actionLogService.reject(selectedLog.id, rejectData);
+      setActionLogs(prevLogs => prevLogs.map(log =>
+        log.id === selectedLog.id ? { ...log, ...updatedLog } : log
+      ));
+      message.success('Action log rejected successfully');
+      setRejectModalVisible(false);
+      setRejecting(false);
+    } catch (error) {
+      setRejecting(false);
+      console.error('Error rejecting action log:', error);
+      message.error('Failed to reject action log');
     }
   };
 
@@ -573,6 +642,8 @@ const EconomistDashboard: React.FC = () => {
         return 'blue';
       case 'in_progress':
         return 'orange';
+      case 'pending_approval':
+        return 'purple';
       case 'closed':
         return 'green';
       default:
@@ -598,18 +669,25 @@ const EconomistDashboard: React.FC = () => {
 
   // Update status filter options
   const statusFilterOptions = [
-    { text: 'Open', value: 'open' },
+    { text: 'New', value: 'open' },
     { text: 'In Progress', value: 'in_progress' },
-    { text: 'Closed', value: 'closed' }
+    { text: 'Pending Approval', value: 'pending_approval' },
+    { text: 'Done', value: 'closed' }
   ];
 
   const getFilteredLogs = () => {
     let filteredLogs = [...actionLogs];
 
-    // Filter by assigned logs if "Assigned To Me" is selected
+    // If "Assigned To Me" is selected, show assigned logs and, for approvers, logs pending their approval
     if (showAssignedOnly) {
-      filteredLogs = filteredLogs.filter(log => 
-        log.assigned_to?.includes(user?.id || 0)
+      const isUnitHead = userDesignation.includes('head') || userRoleName.includes('unit_head') || /^[a-z]{2,3}\d*\/pap$/i.test(userDesignation);
+      const isAssistantCommissioner = userRoleName.includes('assistant_commissioner');
+      const isCommissioner = userRoleName.includes('commissioner');
+      filteredLogs = filteredLogs.filter(log =>
+        log.assigned_to?.includes(user?.id || 0) ||
+        (isUnitHead && log.closure_approval_stage === 'unit_head' && log.status === 'pending_approval') ||
+        (isAssistantCommissioner && log.closure_approval_stage === 'assistant_commissioner' && log.status === 'pending_approval') ||
+        (isCommissioner && log.closure_approval_stage === 'commissioner' && log.status === 'pending_approval')
       );
     }
 
@@ -791,70 +869,70 @@ const EconomistDashboard: React.FC = () => {
     setNewComment('');
   };
 
-  // Update getCommentColor to assign a unique color per user
+  // Professional color palette for user comments
   const commentColors = [
-    '#e6f7ff', // Light blue
-    '#f6ffed', // Light green
-    '#fff7e6', // Light orange
-    '#fff1f0', // Light red
-    '#f9f0ff', // Light purple
-    '#f0f5ff', // Light indigo
-    '#f0fff0', // Light mint
-    '#fffbe6', // Light yellow
-    '#f0f0f0', // Light gray
+    '#e3f2fd', // Blue
+    '#e8f5e9', // Green
+    '#fff3e0', // Orange
+    '#fce4ec', // Pink
+    '#ede7f6', // Purple
+    '#f3e5f5', // Lavender
+    '#f9fbe7', // Lime
+    '#e0f2f1', // Teal
+    '#f5f5f5', // Gray
   ];
   const getCommentColor = (userId: number) => {
     return commentColors[userId % commentColors.length];
   };
 
+  const statusTagColors = {
+    open: { bg: '#1677ff', color: '#fff' }, // New
+    in_progress: { bg: '#faad14', color: '#fff' },
+    pending_approval: { bg: '#722ed1', color: '#fff' },
+    closed: { bg: '#52c41a', color: '#fff' }, // Done
+    default: { bg: '#d9d9d9', color: '#333' }
+  };
+
   const renderComment = (comment: ActionLogComment) => {
     const isCurrentUser = comment.user.id === user?.id;
+    // Pick status tag color
+    const tagStyle = statusTagColors[comment.status || 'default'] || statusTagColors.default;
     return (
       <div style={{ 
         marginBottom: '16px',
         padding: '12px',
-        backgroundColor: isCurrentUser ? '#bae7ff' : getCommentColor(comment.user.id),
+        backgroundColor: getCommentColor(comment.user.id),
         borderRadius: '8px',
-        border: isCurrentUser ? '2px solid #1890ff' : '1px solid #f0f0f0',
+        border: isCurrentUser ? '2px solid #90caf9' : '1px solid #e0e0e0',
         position: 'relative'
       }}>
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
-          marginBottom: '8px'
+          marginBottom: '2px'
         }}>
           <div style={{ fontWeight: 500 }}>
             {comment.user.first_name} {comment.user.last_name}
-        </div>
+          </div>
           <div style={{ color: '#666' }}>
             {format(new Date(comment.created_at), 'MMM dd, yyyy HH:mm')}
           </div>
         </div>
+        <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', margin: '2px 0 4px 0' }}>
+          {comment.status && (
+            <Tag style={{ background: tagStyle.bg, color: tagStyle.color, border: 'none', fontWeight: 500 }}>
+              {comment.status === 'open' ? 'New' :
+                comment.status === 'in_progress' ? 'In Progress' :
+                comment.status === 'pending_approval' ? 'Pending Approval' : 'Done'}
+            </Tag>
+          )}
+        </div>
         <div style={{ marginBottom: '8px', whiteSpace: 'pre-wrap' }}>
           {comment.comment}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          {replyingTo && (
-          <Button 
-            type="link" 
-            size="small"
-            onClick={() => handleReply(comment)}
-              style={{ padding: 0 }}
-          >
-            Reply
-          </Button>
-          )}
-          {comment.status && (
-            <Tag color={
-              comment.status === 'closed' ? 'green' :
-              comment.status === 'in_progress' ? 'orange' : 'blue'
-            }>
-              {comment.status === 'open' ? 'Open' :
-                comment.status === 'in_progress' ? 'In Progress' : 'Closed'}
-            </Tag>
-          )}
+        <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 4 }}>
           {comment.is_approved && (
-            <Tag color="green" icon={<CheckOutlined />}>
+            <Tag color="#e8f5e9" style={{ color: '#388e3c', border: 'none', fontWeight: 500 }} icon={<CheckOutlined />}>
               Approved
             </Tag>
           )}
@@ -956,7 +1034,9 @@ const EconomistDashboard: React.FC = () => {
                 <div style={{ fontWeight: 500, color: '#444' }}>Status:</div>
                 <div>
                   <Tag color={getStatusColor(selectedLogDetails.status)} style={{ padding: '4px 12px', fontSize: '13px', fontWeight: 500 }}>
-                    {selectedLogDetails.status.charAt(0).toUpperCase() + selectedLogDetails.status.slice(1).replace('_', ' ')}
+                    {selectedLogDetails.status === 'open' ? 'New' :
+                      selectedLogDetails.status === 'closed' ? 'Done' :
+                      selectedLogDetails.status.charAt(0).toUpperCase() + selectedLogDetails.status.slice(1).replace('_', ' ')}
                   </Tag>
             </div>
                 <div style={{ fontWeight: 500, color: '#444' }}>Created At:</div>
@@ -1026,7 +1106,7 @@ const EconomistDashboard: React.FC = () => {
                   children: (
                     <div>
                       <div style={{ marginBottom: '8px' }}>
-                        <strong>Assigned by:</strong> {getFullName(assignment.assigned_by)}
+                        <strong>Assigned by:</strong> {getFullName(users.find(u => u.id === assignment.assigned_by.id) || assignment.assigned_by)}
               </div>
                       <div style={{ marginBottom: '8px' }}>
                         <strong>Assigned to:</strong>{' '}
@@ -1126,13 +1206,17 @@ const EconomistDashboard: React.FC = () => {
       width: '10%',
       render: (status: string) => (
         <Tag color={getStatusColor(status)}>
-          {status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
+          {status === 'pending_approval' ? 'Pending Approval' :
+            status === 'open' ? 'New' :
+            status === 'closed' ? 'Done' :
+            status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
         </Tag>
       ),
       filters: [
-        { text: 'Open', value: 'open' },
+        { text: 'New', value: 'open' },
         { text: 'In Progress', value: 'in_progress' },
-        { text: 'Closed', value: 'closed' }
+        { text: 'Done', value: 'closed' },
+        { text: 'Pending Approval', value: 'pending_approval' }
       ],
       onFilter: (value: any, record: ActionLog) => record.status.toLowerCase() === String(value).toLowerCase(),
     },
@@ -1212,14 +1296,24 @@ const EconomistDashboard: React.FC = () => {
       width: '15%',
       render: (date: string, record: ActionLog) => {
         if (!date) return '-';
-        
         const dueDate = new Date(date);
+        if (record.status === 'closed') {
+          return (
+            <div>
+              {format(dueDate, 'yyyy-MM-dd')}
+              <div style={{ marginTop: '4px' }}>
+                <Tag color="#e8f5e9" style={{ color: '#388e3c', fontWeight: 500, fontStyle: 'italic' }}>
+                  Completed just on time
+                </Tag>
+              </div>
+            </div>
+          );
+        }
         const today = new Date();
         // Set both dates to start of day to get accurate day difference
         const startOfDueDate = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
         const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const daysRemaining = Math.ceil((startOfDueDate.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24));
-        
         return (
           <div>
             <div>{format(dueDate, 'yyyy-MM-dd')}</div>
@@ -1243,55 +1337,25 @@ const EconomistDashboard: React.FC = () => {
       key: 'actions',
       width: '10%',
       render: (text: string, record: ActionLog) => {
-        // Update unit head detection to check for specific designation pattern
         const isUnitHead = user.designation?.toLowerCase().includes('head') || 
-                          (user.designation?.match(/^[A-Z]{2,3}\d+\/PAP$/) && user.designation?.toLowerCase().includes('1'));
+                          (user.designation?.match(/^[A-Z]{2,3}\d+/) && user.designation?.toLowerCase().includes('1'));
+        const isInSameUnit = record.created_by?.department_unit?.id === user.department_unit?.id;
         const isCommissioner = user.role?.name?.toLowerCase() === 'commissioner';
         const isAssistantCommissioner = user.role?.name?.toLowerCase() === 'assistant_commissioner';
+        // Only show Approve/Reject for the correct role at each stage and only if closure workflow is active and status is 'pending_approval'
+        const canApproveClosure = (
+          record.status === 'pending_approval' &&
+          record.closure_approval_stage !== 'none' &&
+          (
+            (record.closure_approval_stage === 'unit_head' && isUnitHead && isInSameUnit) ||
+            (record.closure_approval_stage === 'assistant_commissioner' && isAssistantCommissioner) ||
+            (record.closure_approval_stage === 'commissioner' && isCommissioner)
+          )
+        );
         const userUnitId = user.department_unit?.id;
-        const isInSameUnit = record.created_by?.department_unit?.id === user.department_unit?.id;
-        
-        // Update canAssign logic to be similar to assistant commissioner
-        const canAssign = isUnitHead || isCommissioner || isAssistantCommissioner;
-        
-        console.log('Action log assignment check:', {
-          logId: record.id,
-          isUnitHead,
-          isCommissioner,
-          isAssistantCommissioner,
-          userUnitId,
-          recordUnitId: record.created_by?.department_unit?.id,
-          isInSameUnit,
-          canAssign,
-          userDesignation: user.designation,
-          assignedTo: record.assigned_to
-        });
-
         const isAssignedToMe = record.assigned_to?.includes(user?.id || 0);
         const isAssigned = record.assigned_to && record.assigned_to.length > 0;
         const isClosed = record.status === 'closed';
-
-        // Calculate days remaining for reassignment
-        const dueDate = record.due_date ? new Date(record.due_date) : null;
-        const today = new Date();
-        const startOfDueDate = new Date(dueDate?.getFullYear() || 0, dueDate?.getMonth() || 0, dueDate?.getDate() || 0);
-        const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        const daysRemaining = dueDate ? Math.ceil((startOfDueDate.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24)) : null;
-        const canReassign = isAssigned && daysRemaining === 0;
-        
-        // Get assignable users
-        const assignableUsers = getFilteredUsers(user);
-        
-        // Determine if user can approve based on role, designation, current approval status, and API flag
-        const canApprove = record.can_approve && (
-          // Unit Head can approve if they are in the same unit and no approval yet
-          (isUnitHead && !record.approval_status && isInSameUnit) ||
-          // Assistant Commissioner can approve after Unit Head
-          (isAssistantCommissioner && record.approval_status === 'unit_head_approved') ||
-          // Commissioner can approve after Assistant Commissioner
-          (isCommissioner && record.approval_status === 'assistant_commissioner_approved')
-        );
-
         return (
           <Space>
             <Tooltip title="View">
@@ -1299,7 +1363,7 @@ const EconomistDashboard: React.FC = () => {
             </Tooltip>
             {canAssign && (
               isAssigned ? (
-                canReassign ? (
+                canApproveClosure ? (
                   <Tooltip title="Re-assign">
                     <Button type="primary" size="small" icon={<UserSwitchOutlined />} onClick={() => {
                       setSelectedLog(record);
@@ -1322,19 +1386,35 @@ const EconomistDashboard: React.FC = () => {
             )}
             {isAssignedToMe && (
               <Tooltip title="Update Status">
-                <Button type="primary" size="small" icon={<EditOutlined />} onClick={() => {
-                  setSelectedLog(record);
-                  setStatusModalVisible(true);
-                }} />
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<EditOutlined />}
+                  onClick={() => {
+                    setSelectedLog(record);
+                    setStatusModalVisible(true);
+                  }}
+                  disabled={
+                    record.status === 'closed' && record.closure_approval_stage === 'closed' && record.assigned_to?.includes(user?.id)
+                  }
+                />
               </Tooltip>
             )}
-            {canApprove && (
-              <Tooltip title="Approve">
-                <Button type="primary" size="small" icon={<CheckCircleOutlined />} onClick={() => {
-                  setSelectedLog(record);
-                  setApprovalModalVisible(true);
-                }} />
-              </Tooltip>
+            {canApproveClosure && (
+              <>
+                <Tooltip title="Approve Closure">
+                  <Button type="primary" size="small" icon={<CheckCircleOutlined />} onClick={() => {
+                    setSelectedLog(record);
+                    setApprovalModalVisible(true);
+                  }} disabled={approving} />
+                </Tooltip>
+                <Tooltip title="Reject Closure">
+                  <Button type="default" danger size="small" icon={<CloseOutlined />} onClick={() => {
+                    setSelectedLog(record);
+                    setRejectModalVisible(true);
+                  }} disabled={rejecting} />
+                </Tooltip>
+              </>
             )}
             <Tooltip title="Comments">
               <Badge
@@ -1550,6 +1630,61 @@ const EconomistDashboard: React.FC = () => {
     if (actionLogs.length > 0) fetchUnreadCounts();
   }, [actionLogs]);
 
+  // Get unique units from actionLogs
+  const uniqueUnits = Array.from(new Set(actionLogs.map(log => log.created_by?.department_unit?.id)))
+    .filter(Boolean)
+    .map(id => {
+      const log = actionLogs.find(l => l.created_by?.department_unit?.id === id);
+      return { id, name: log?.created_by?.department_unit?.name || `Unit ${id}` };
+    });
+
+  // Filter logs by selected unit
+  const getUnitFilteredLogs = () => {
+    const logs = getFilteredLogs();
+    if (unitFilter === 'all') return logs;
+    return logs.filter(log => log.created_by?.department_unit?.id === unitFilter);
+  };
+
+  // Update export functions to use getUnitFilteredLogs
+  const handleExportExcel = () => {
+    const logs = getUnitFilteredLogs();
+    console.log('Exporting logs:', logs);
+    const data = logs.map(log => ({
+      ID: log.id,
+      Title: log.title,
+      Description: log.description,
+      Department: log.department?.name,
+      'Created By': getFullName(log.created_by),
+      Status: log.status,
+      Priority: log.priority,
+      'Due Date': log.due_date ? format(new Date(log.due_date), 'yyyy-MM-dd') : '',
+      'Assigned To': log.assigned_to?.join(', '),
+      'Approval Stage': log.closure_approval_stage,
+      'Requested By': log.closure_requested_by ? getFullName(log.closure_requested_by) : '',
+      'Created At': log.created_at ? format(new Date(log.created_at), 'yyyy-MM-dd HH:mm') : '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Action Logs');
+    XLSX.writeFile(wb, 'action_logs.xlsx');
+  };
+  const handleExportWord = () => {
+    const logs = getUnitFilteredLogs();
+    let content = 'Action Logs\n\n';
+    logs.forEach(log => {
+      content += `ID: ${log.id}\nTitle: ${log.title}\nDescription: ${log.description}\nDepartment: ${log.department?.name}\nCreated By: ${getFullName(log.created_by)}\nStatus: ${log.status}\nPriority: ${log.priority}\nDue Date: ${log.due_date ? format(new Date(log.due_date), 'yyyy-MM-dd') : ''}\nAssigned To: ${log.assigned_to?.join(', ')}\nApproval Stage: ${log.closure_approval_stage}\nRequested By: ${log.closure_requested_by ? getFullName(log.closure_requested_by) : ''}\nCreated At: ${log.created_at ? format(new Date(log.created_at), 'yyyy-MM-dd HH:mm') : ''}\n-----------------------------\n`;
+    });
+    const blob = new Blob([content], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'action_logs.doc';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider width={200} style={{ background: '#fff', borderRight: '1px solid #e0e0e0', position: 'fixed', height: '100vh', left: 0, top: 0, zIndex: 10 }}>
@@ -1636,11 +1771,42 @@ const EconomistDashboard: React.FC = () => {
                     Create Action Log
                   </Button>
                 )}
+                <Select
+                  value={unitFilter}
+                  onChange={setUnitFilter}
+                  style={{ width: 110, marginRight: 8 }}
+                >
+                  <Select.Option value="all">All Units</Select.Option>
+                  {uniqueUnits.map(unit => (
+                    <Select.Option key={unit.id} value={unit.id}>{unit.name}</Select.Option>
+                  ))}
+                </Select>
+                <Dropdown
+                  menu={{
+                    items: [
+                      {
+                        key: 'excel',
+                        label: 'Export to Excel',
+                        onClick: handleExportExcel
+                      },
+                      {
+                        key: 'word',
+                        label: 'Export to Word',
+                        onClick: handleExportWord
+                      }
+                    ]
+                  }}
+                  placement="bottomLeft"
+                >
+                  <Button icon={<DownloadOutlined />} style={{ marginRight: 8 }}>
+                    Export
+                  </Button>
+                </Dropdown>
               </div>
             </div>
             <Table
               columns={columns}
-              dataSource={getFilteredLogs()}
+              dataSource={getUnitFilteredLogs()}
               loading={loading}
               rowKey="id"
               pagination={{ pageSize: 10 }}
@@ -1672,7 +1838,7 @@ const EconomistDashboard: React.FC = () => {
               <Form.Item name="priority" label="Priority" rules={[{ required: true, message: 'Please select a priority' }]}><Select options={[{ value: 'High' }, { value: 'Medium' }, { value: 'Low' }]} /></Form.Item>
               <Form.Item name="assigned_to" label="Assign To"><Select mode="multiple" options={renderUserOptions()} /></Form.Item>
               <Form.Item>
-                <Button type="primary" htmlType="submit">Create</Button>
+                <Button type="primary" htmlType="submit" loading={creating} disabled={creating}>Create</Button>
               </Form.Item>
             </Form>
           </Modal>
@@ -1708,9 +1874,9 @@ const EconomistDashboard: React.FC = () => {
                 rules={[{ required: true, message: 'Please select a status' }]}
               >
                 <Select>
-                  <Select.Option value="open">Open</Select.Option>
+                  <Select.Option value="open">New</Select.Option>
                   <Select.Option value="in_progress">In Progress</Select.Option>
-                  <Select.Option value="closed">Closed</Select.Option>
+                  <Select.Option value="closed">Done</Select.Option>
                 </Select>
               </Form.Item>
 
@@ -1737,9 +1903,29 @@ const EconomistDashboard: React.FC = () => {
             destroyOnHidden
           >
             <Form form={approvalForm} layout="vertical" onFinish={handleApprove}>
-              <Form.Item name="approval_comment" label="Approval Comment"> <Input.TextArea rows={3} /> </Form.Item>
+              <Form.Item name="approval_comment" label="Approval Comment" rules={[{ required: true, message: 'Please enter an approval comment' }]}> 
+                <Input.TextArea rows={3} />
+              </Form.Item>
               <Form.Item>
-                <Button type="primary" htmlType="submit">Approve</Button>
+                <Button type="primary" htmlType="submit" disabled={approving}>Approve</Button>
+              </Form.Item>
+            </Form>
+          </Modal>
+          <Modal
+            title="Reject Action Log"
+            open={rejectModalVisible}
+            onCancel={() => setRejectModalVisible(false)}
+            footer={null}
+            destroyOnHidden
+          >
+            <Form
+              form={approvalForm}
+              layout="vertical"
+              onFinish={handleReject}
+            >
+              <Form.Item name="rejection_comment" label="Rejection Comment" rules={[{ required: true, message: 'Please enter a rejection comment' }]}><Input.TextArea rows={3} /></Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit">Reject</Button>
               </Form.Item>
             </Form>
           </Modal>

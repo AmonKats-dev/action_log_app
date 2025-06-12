@@ -13,27 +13,25 @@ class SMSNotificationService:
 
     def send_notification(self, to_number, message):
         """
-        Send an SMS notification to a user
-        :param to_number: The recipient's phone number in E.164 format (e.g., +1234567890)
-        :param message: The message to send
-        :return: True if successful, False otherwise
+        Send SMS notification using Twilio.
+        Handles rate limiting and other errors gracefully.
         """
         try:
-            # Format the phone numbers for SMS
-            from_number = self.from_number.lstrip('+')
-            to_number = to_number.lstrip('+')
-            
-            logger.info(f"Sending SMS from {from_number} to {to_number}")
-            
             message = self.client.messages.create(
                 body=message,
-                from_=f"+{from_number}",
-                to=f"+{to_number}"
+                from_=self.from_number,
+                to=to_number
             )
-            logger.info(f"SMS sent successfully: {message.sid}")
+            logger.info(f"SMS sent successfully to {to_number}. SID: {message.sid}")
             return True
+        except TwilioRestException as e:
+            if e.code == 63038:  # Rate limit exceeded
+                logger.warning(f"Twilio rate limit exceeded for number {to_number}. Message not sent.")
+            else:
+                logger.error(f"Error sending SMS to {to_number}: {str(e)}")
+            return False
         except Exception as e:
-            logger.error(f"Error sending SMS: {str(e)}")
+            logger.error(f"Unexpected error sending SMS to {to_number}: {str(e)}")
             return False
 
 class WhatsAppNotificationService:

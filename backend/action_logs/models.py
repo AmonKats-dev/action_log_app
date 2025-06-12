@@ -10,6 +10,7 @@ class ActionLog(models.Model):
     STATUS_CHOICES = [
         ('open', 'Open'),
         ('in_progress', 'In Progress'),
+        ('pending_approval', 'Pending Approval'),
         ('closed', 'Closed'),
     ]
 
@@ -17,6 +18,15 @@ class ActionLog(models.Model):
         ('Low', 'Low'),
         ('Medium', 'Medium'),
         ('High', 'High'),
+    ]
+
+    CLOSURE_STAGE_CHOICES = [
+        ('none', 'None'),
+        ('unit_head', 'Unit Head'),
+        ('assistant_commissioner', 'Assistant Commissioner'),
+        ('commissioner', 'Commissioner'),
+        ('closed', 'Closed'),
+        ('rejected', 'Rejected'),
     ]
 
     title = models.CharField(max_length=200)
@@ -38,6 +48,8 @@ class ActionLog(models.Model):
     rejection_reason = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    closure_approval_stage = models.CharField(max_length=32, choices=CLOSURE_STAGE_CHOICES, default='none')
+    closure_requested_by = models.ForeignKey(User, null=True, blank=True, related_name='closure_requests', on_delete=models.SET_NULL)
 
     class Meta:
         ordering = ['-created_at']
