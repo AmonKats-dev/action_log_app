@@ -8,7 +8,7 @@ import ActionLogs from './pages/ActionLogs';
 import Users from './pages/Users';
 import Departments from './pages/Departments';
 import { ROLES } from './constants/roles';
-import { 
+import {  
   EconomistDashboard,
   // SeniorDashboard,
   // PrincipalDashboard,
