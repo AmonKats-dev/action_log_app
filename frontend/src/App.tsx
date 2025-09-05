@@ -10,10 +10,10 @@ import Departments from './pages/Departments';
 import { ROLES } from './constants/roles';
 import { 
   EconomistDashboard,
-  SeniorDashboard,
-  PrincipalDashboard,
-  AssistantDashboard,
-  CommissionerDashboard 
+  // SeniorDashboard,
+  // PrincipalDashboard,
+  // AssistantDashboard,
+  // CommissionerDashboard 
 } from './pages/roles';
 
 const App = () => {
@@ -28,9 +28,9 @@ const App = () => {
       case ROLES.ASSISTANT_COMMISSIONER:
         return <Navigate to="/roles/economist/dashboard" replace />;
       case ROLES.SENIOR_ECONOMIST:
-        return <Navigate to="/roles/senior/dashboard" replace />;
+        // return <Navigate to="/roles/senior/dashboard" replace />;
       case ROLES.PRINCIPAL_ECONOMIST:
-        return <Navigate to="/roles/principal/dashboard" replace />;
+        // return <Navigate to="/roles/principal/dashboard" replace />;
       default:
         return <Navigate to="/login" replace />;
     }
@@ -50,10 +50,10 @@ const App = () => {
 
       {/* Role-specific dashboard routes */}
       <Route path="/roles/economist/dashboard" element={<EconomistDashboard />} />
-      <Route path="/roles/senior/dashboard" element={<SeniorDashboard />} />
+      {/* <Route path="/roles/senior/dashboard" element={<SeniorDashboard />} />
       <Route path="/roles/principal/dashboard" element={<PrincipalDashboard />} />
       <Route path="/roles/assistant/dashboard" element={<AssistantDashboard />} />
-      <Route path="/roles/commissioner/dashboard" element={<CommissionerDashboard />} />
+      <Route path="/roles/commissioner/dashboard" element={<CommissionerDashboard />} /> */}
 
       <Route element={<RoleProtectedRoute allowedRoles={[ROLES.COMMISSIONER, ROLES.ASSISTANT_COMMISSIONER, ROLES.SUPER_ADMIN]} />}>
         <Route path="users" element={<Users />} />

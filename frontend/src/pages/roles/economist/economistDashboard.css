@@ -1,0 +1,52 @@
+/* Notification badge for Comments button in Actions column */
+.dashboard-table .ant-badge-count {
+  background: #ff4d4f !important;
+  color: #fff !important;
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 18px;
+  height: 18px;
+  line-height: 18px;
+  box-shadow: 0 0 0 2px #fff;
+  top: 2px !important;
+  right: 2px !important;
+  z-index: 2;
+  padding: 0 4px;
+}
+
+.dashboard-table .ant-btn-primary {
+  position: relative;
+  background: #1677ff;
+  border: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+
+.dashboard-table .ant-table-cell {
+  border-right: none !important;
+}
+
+/* Keep horizontal lines for row separation if desired */
+.dashboard-table .ant-table-tbody > tr > td {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.dashboard-table-header-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fff;
+  padding: 24px;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+}
+
+/* Remove the previous .ant-table-thead > tr > th and .ant-table-header-sticky overrides */
+
+.ant-layout-sider-children {
+  background: #fff !important;
+  border: 1.5px solid #e0e0b0 !important;
+  box-sizing: border-box;
+} 

@@ -19,6 +19,7 @@ class UserSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True
     )
+    email = serializers.EmailField(required=False, allow_blank=True)
 
     class Meta:
         model = User
@@ -31,6 +32,12 @@ class UserSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'password': {'write_only': True}
         }
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not data.get('email'):
+            data['email'] = ''
+        return data
 
     def validate(self, data):
         # If user is Commissioner or Assistant Commissioner, don't allow department unit

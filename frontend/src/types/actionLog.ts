@@ -84,9 +84,7 @@ export interface ActionLogComment {
   comment: string;
   created_at: string;
   updated_at: string;
-  status?: ActionLogStatus;
-  is_approved?: boolean;
-  parent_comment_id?: number | null;
+  parent_id?: number | null;
   replies?: ActionLogComment[];
 }
 
