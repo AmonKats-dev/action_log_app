@@ -23,19 +23,34 @@ class CanManageUsers(permissions.BasePermission):
 def can_approve_action_log(user, action_log):
     """
     Returns True if the user can approve the given action log.
-    Typically, this means the user is a super admin, commissioner,
-    or the assistant commissioner (department head) of the action log's department.
+    This function now properly handles the leave delegation system:
+    - Super admins and commissioners can always approve
+    - Ag. C/PAP users can approve when not on leave
+    - Ag. AC/PAP users can approve when they have leave delegation responsibilities
+    - Department heads (assistant commissioners) can approve for their department
     """
     if not user or not user.is_authenticated:
         return False
+    
+    # Super admin and commissioner can always approve
     if hasattr(user, 'is_super_admin') and user.is_super_admin:
         return True
     if hasattr(user, 'is_commissioner') and user.is_commissioner:
         return True
+    
+    # Use the User model's delegation-aware method
+    if hasattr(user, 'can_approve_action_logs'):
+        return user.can_approve_action_logs()
+    
+    # Fallback to basic role check for backward compatibility
+    if hasattr(user, 'role') and user.role and user.role.can_approve:
+        return True
+    
     # Department head logic (assistant commissioner for the department)
     if (
         hasattr(user, 'department') and user.department == action_log.department and
         hasattr(user, 'role') and user.role and user.role.name == 'assistant_commissioner'
     ):
         return True
+    
     return False 
