@@ -30,13 +30,21 @@ class ActionLog(models.Model):
     ]
 
     title = models.CharField(max_length=200)
-    description = models.TextField()
+    description = models.TextField(null=True, blank=True)
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='action_logs')
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_logs')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open')
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='Medium')
     due_date = models.DateTimeField(null=True, blank=True)
     assigned_to = models.ManyToManyField(User, related_name='assigned_logs')
+    team_leader = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='team_lead_logs',
+        help_text='Team leader responsible for status updates (required when 2+ assignees)'
+    )
     approved_by = models.ForeignKey(
         User, 
         on_delete=models.SET_NULL, 
@@ -147,6 +155,7 @@ class ActionLogAttachment(models.Model):
     class Meta:
         verbose_name = 'Action Log Attachment'
         verbose_name_plural = 'Action Log Attachments'
+        ordering = ['-uploaded_at']  # Most recent attachments first
 
     def __str__(self):
         return f"{self.filename} - {self.action_log.title}"
