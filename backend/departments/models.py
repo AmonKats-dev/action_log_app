@@ -10,6 +10,7 @@ class Department(models.Model):
     class Meta:
         verbose_name = 'Department'
         verbose_name_plural = 'Departments'
+        ordering = ['name']  # Alphabetical ordering by department name
 
     def __str__(self):
         return f"{self.name} ({self.code})"
@@ -18,11 +19,13 @@ class DepartmentUnit(models.Model):
     INFRASTRUCTURE = 'infrastructure'
     PUBLIC_ADMIN = 'public_admin'
     SOCIAL_SERVICES = 'social_services'
+    IBP = 'ibp'
 
     UNIT_TYPE_CHOICES = [
         (INFRASTRUCTURE, 'Infrastructure'),
         (PUBLIC_ADMIN, 'Public Administration'),
         (SOCIAL_SERVICES, 'Social Services'),
+        (IBP, 'IBP'),
     ]
 
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='units')
@@ -36,6 +39,7 @@ class DepartmentUnit(models.Model):
         verbose_name = 'Department Unit'
         verbose_name_plural = 'Department Units'
         unique_together = ['department', 'name']
+        ordering = ['department__name', 'name']  # Order by department name, then unit name
 
     def __str__(self):
         return f"{self.name} - {self.department.name}" 
