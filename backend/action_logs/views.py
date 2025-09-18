@@ -8,6 +8,10 @@ from .serializers import ActionLogSerializer, ActionLogApprovalSerializer, Actio
 from users.permissions import can_approve_action_log
 from django.http import Http404
 from users.models import User
+from notifications.services import SMSNotificationService
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ActionLogViewSet(viewsets.ModelViewSet):
     serializer_class = ActionLogSerializer
@@ -30,7 +34,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         instance = serializer.save(created_by=self.request.user)
-        # If assigned_to is set, create assignment history
+        # If assigned_to is set, create assignment history and send notifications
         assigned_to_ids = self.request.data.get('assigned_to', [])
         if assigned_to_ids:
             assignment_history = ActionLogAssignmentHistory.objects.create(
@@ -39,38 +43,93 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                 comment=self.request.data.get('comment', '')
             )
             assignment_history.assigned_to.set(assigned_to_ids)
+            
+            # Get assignee names
+            assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in assigned_to_ids]
+            assignees_text = ", ".join(assignee_names)
+            
+            # Send SMS notifications to assigned users
+            sms_service = SMSNotificationService()
+            for user_id in assigned_to_ids:
+                try:
+                    user = User.objects.get(id=user_id)
+                    if user.phone_number:
+                        message = (
+                            f"You've been assigned an Action Log\n\n"
+                            f"Title: {instance.title}\n"
+                            f"Department: PAP\n"
+                            f"Priority: {instance.priority}\n"
+                            f"Due Date: {instance.due_date.strftime('%Y-%m-%d')}\n"
+                            f"Assignee(s): {assignees_text}\n"
+                            f"Assigned By: {self.request.user.get_full_name()}\n\n"
+                            f"Please check your dashboard for more details."
+                        )
+                        sms_sent = sms_service.send_notification(user.phone_number, message)
+                        if not sms_sent:
+                            logger.warning(f"Failed to send SMS notification to user {user.id} for action log {instance.id}")
+                except User.DoesNotExist:
+                    logger.warning(f"User with ID {user_id} not found when sending SMS notification")
+                    continue
 
     def update(self, request, *args, **kwargs):
-        # Get the comment from the request data
         comment_text = request.data.pop('comment', None)
-        
-        # Get the current instance
         instance = self.get_object()
-        
-        # Check if assigned_to is being updated
+        status_changed = False
+        old_status = instance.status
+        user = request.user
+        # --- Closure Approval Workflow ---
+        if 'status' in request.data and request.data['status'] == 'closed' and old_status != 'closed':
+            # Initiate closure approval workflow
+            instance.closure_approval_stage = 'unit_head'
+            instance.closure_requested_by = user
+            instance.status = 'pending_approval'  # Set to pending_approval until final approval
+            instance.save()
+            status_changed = True
+            # Remove status from request data to prevent overwriting
+            request.data.pop('status', None)
+        elif 'status' in request.data and request.data['status'] != old_status:
+            status_changed = True
+        # ... (rest of assignment logic unchanged) ...
         if 'assigned_to' in request.data:
-            # Create assignment history record
             assignment_history = ActionLogAssignmentHistory.objects.create(
                 action_log=instance,
                 assigned_by=request.user,
                 comment=comment_text
             )
-            # Add the assigned users
             assignment_history.assigned_to.set(request.data['assigned_to'])
-        
-        # Perform the update
+            assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in request.data['assigned_to']]
+            assignees_text = ", ".join(assignee_names)
+            sms_service = SMSNotificationService()
+            for user_id in request.data['assigned_to']:
+                try:
+                    user = User.objects.get(id=user_id)
+                    if user.phone_number:
+                        message = (
+                            f"Action Log Assignment Update\n\n"
+                            f"Title: {instance.title}\n"
+                            f"Department: PAP\n"
+                            f"Priority: {instance.priority}\n"
+                            f"Due Date: {instance.due_date.strftime('%Y-%m-%d')}\n"
+                            f"Assignee(s): {assignees_text}\n"
+                            f"Assigned By: {request.user.get_full_name()}\n\n"
+                            f"Please check your dashboard for more details."
+                        )
+                        sms_sent = sms_service.send_notification(user.phone_number, message)
+                        if not sms_sent:
+                            logger.warning(f"Failed to send SMS notification to user {user.id} for action log {instance.id}")
+                except User.DoesNotExist:
+                    logger.warning(f"User with ID {user_id} not found when sending SMS notification")
+                    continue
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
-        
-        # If there's a comment, create a new comment record
-        if comment_text:
+        if comment_text or status_changed:
             ActionLogComment.objects.create(
                 action_log=instance,
                 user=request.user,
-                comment=comment_text
+                comment=comment_text,
+                status=instance.status
             )
-        
         return Response(serializer.data)
 
     @action(detail=True, methods=['get', 'post'])
@@ -95,10 +154,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                 )
 
             if request.method == 'POST':
-                print("\n=== Comment Creation Started ===")
-                print(f"Request method: {request.method}")
-                print(f"Request user: {request.user.id} ({request.user.username})")
-                print(f"Request data: {request.data}")
+                logger.info(f"Creating comment for action log {pk} by user {request.user.id}")
                 
                 parent = None
                 parent_id = request.data.get('parent_id')
@@ -114,18 +170,14 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                     comment=request.data.get('comment'),
                     parent_comment=parent
                 )
-                print(f"Comment created with ID: {comment.id}")
+                logger.info(f"Comment {comment.id} created successfully")
                 
                 # Create notifications
-                print("\n=== Creating Notifications ===")
                 notified_user_ids = set()
-                print(f"Sender user ID: {request.user.id}")
                 
                 # Create notification for assigned users
                 assigned_users = action_log.assigned_to.all()
-                print(f"Number of assigned users: {assigned_users.count()}")
                 for user in assigned_users:
-                    print(f"Checking assigned user: {user.id} ({user.username})")
                     if user != request.user:  # Don't notify the commenter
                         ActionLogNotification.objects.create(
                             user=user,
@@ -133,9 +185,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(user.id)
-                        print(f"Notified assigned user: {user.id} ({user.username})")
-                    else:
-                        print(f"Skipping notification for sender: {user.id} ({user.username})")
+                        logger.info(f"Notification created for assigned user {user.id}")
 
                 # Standard notification logic: assigned users, parent comment author, root comment author
                 # Notify assigned users (except sender)
@@ -147,78 +197,46 @@ class ActionLogViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(user.id)
-                        print(f"Notified assigned user: {user.id} ({user.username})")
-                    else:
-                        print(f"Skipping notification for sender or already notified: {user.id} ({user.username})")
+                        logger.info(f"Notification created for assigned user {user.id}")
 
                 # If this is a reply, notify the parent comment's author and root/original comment's author
-                if parent_id:
-                    try:
-                        parent_comment = ActionLogComment.objects.get(id=parent_id)
-                        parent_author = parent_comment.user
-                        print(f"[DEBUG] Parent author: {parent_author.id} ({parent_author.username})")
-                        print(f"[DEBUG] Sender: {request.user.id} ({request.user.username})")
-                        if parent_author != request.user and parent_author.id not in notified_user_ids:
-                            ActionLogNotification.objects.create(
-                                user=parent_author,
-                                action_log=action_log,
-                                comment=comment
-                            )
-                            notified_user_ids.add(parent_author.id)
-                            print(f"[DEBUG] Notified parent comment author: {parent_author.id} ({parent_author.username})")
-                        else:
-                            print(f"[DEBUG] Skipping parent author notification - already notified or is sender")
-                        # Traverse up to the root/original comment
-                        root_comment = parent_comment
-                        while root_comment.parent_comment:
-                            root_comment = root_comment.parent_comment
-                        root_author = root_comment.user
-                        print(f"[DEBUG] Root author: {root_author.id} ({root_author.username})")
-                        if root_author != request.user:
-                            ActionLogNotification.objects.create(
-                                user=root_author,
-                                action_log=action_log,
-                                comment=comment
-                            )
-                            notified_user_ids.add(root_author.id)
-                            print(f"[DEBUG] Notified root/original comment author: {root_author.id} ({root_author.username})")
-                        else:
-                            print(f"[DEBUG] Skipping root author notification - is sender")
-                    except ActionLogComment.DoesNotExist:
-                        print("[DEBUG] Parent comment does not exist for notification.")
-                        pass
+                if parent:
+                    parent_author = parent.user
+                    if parent_author != request.user and parent_author.id not in notified_user_ids:
+                        ActionLogNotification.objects.create(
+                            user=parent_author,
+                            action_log=action_log,
+                            comment=comment
+                        )
+                        notified_user_ids.add(parent_author.id)
+                        logger.info(f"Notification created for parent comment author {parent_author.id}")
 
-                print("\n=== Comment Creation Completed ===")
-                print(f"Total users notified: {len(notified_user_ids)}")
-                print(f"Notified user IDs: {notified_user_ids}")
-                
-                serializer = ActionLogCommentSerializer(comment)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
+                    # Notify root comment author if different from parent author
+                    root_comment = parent
+                    while root_comment.parent_comment:
+                        root_comment = root_comment.parent_comment
+                    
+                    root_author = root_comment.user
+                    if root_author != request.user and root_author.id not in notified_user_ids:
+                        ActionLogNotification.objects.create(
+                            user=root_author,
+                            action_log=action_log,
+                            comment=comment
+                        )
+                        notified_user_ids.add(root_author.id)
+                        logger.info(f"Notification created for root comment author {root_author.id}")
 
-            # GET method - return all comments
-            print(f"Fetching comments for action log {pk}")
+                return Response(ActionLogCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
             
-            # Get all comments for the log with their replies
-            comments = ActionLogComment.objects.filter(
-                action_log_id=pk,
-                parent_comment=None  # Get only top-level comments
-            ).select_related('user').prefetch_related(
-                'replies',
-                'replies__user'
-            ).order_by('-created_at')
-            
-            print(f"Found {comments.count()} top-level comments")
-            
+            # GET request - return all comments
+            comments = ActionLogComment.objects.filter(action_log=action_log, parent_comment=None).select_related('user')
             serializer = ActionLogCommentSerializer(comments, many=True)
-            print(f"Serialized comments: {serializer.data}")
             return Response(serializer.data)
-
+            
         except Exception as e:
-            import traceback
-            print(f"Error in comments view: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error in comments action: {str(e)}")
             return Response(
-                {'error': str(e)},
+                {'error': 'An error occurred while processing your request'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -259,26 +277,50 @@ class ActionLogViewSet(viewsets.ModelViewSet):
             
             return Response({'message': 'Comments marked as viewed'})
         except Exception as e:
-            import traceback
-            print(f"Error in mark_comments_viewed: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error in mark_comments_viewed: {str(e)}")
             return Response(
-                {'error': str(e)},
+                {'error': 'An error occurred while processing your request'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         action_log = self.get_object()
-        
-        if not can_approve_action_log(request.user, action_log):
+        user = request.user
+        logger.info(f"[APPROVE] User {user.id} ({user.get_full_name()}) attempting to approve log {action_log.id} at stage {action_log.closure_approval_stage}")
+        # --- Closure Approval Workflow ---
+        if action_log.closure_approval_stage in ['unit_head', 'assistant_commissioner', 'commissioner']:
+            prev_stage = action_log.closure_approval_stage
+            # Move to next stage or close
+            if action_log.closure_approval_stage == 'unit_head':
+                action_log.closure_approval_stage = 'assistant_commissioner'
+            elif action_log.closure_approval_stage == 'assistant_commissioner':
+                action_log.closure_approval_stage = 'commissioner'
+            elif action_log.closure_approval_stage == 'commissioner':
+                action_log.closure_approval_stage = 'closed'
+                action_log.status = 'closed'  # Only now set to closed
+            action_log.save()
+            logger.info(f"[APPROVE] Log {action_log.id} stage changed from {prev_stage} to {action_log.closure_approval_stage}")
+            # Add approval comment
+            comment_text = request.data.get('comment', '')
+            if comment_text:
+                ActionLogComment.objects.create(
+                    action_log=action_log,
+                    user=user,
+                    comment=comment_text,
+                    status=action_log.status,
+                    is_approved=True
+                )
+            return Response(self.get_serializer(action_log).data, status=status.HTTP_200_OK)
+        # --- Default approval logic ---
+        if not can_approve_action_log(user, action_log):
+            logger.warning(f"[APPROVE] User {user.id} ({user.get_full_name()}) with role {user.role.name} is NOT authorized to approve log {action_log.id} at stage {action_log.closure_approval_stage}")
             return Response(
                 {"detail": "You don't have permission to approve this action log"},
                 status=status.HTTP_403_FORBIDDEN
             )
-
         try:
-            action_log.approve(request.user)
+            action_log.approve(user)
             return Response(
                 self.get_serializer(action_log).data,
                 status=status.HTTP_200_OK
@@ -292,20 +334,55 @@ class ActionLogViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
         action_log = self.get_object()
+        user = request.user
+        # --- Closure Approval Workflow ---
+        if action_log.closure_approval_stage in ['assistant_commissioner', 'commissioner']:
+            # Move down a stage
+            if action_log.closure_approval_stage == 'assistant_commissioner':
+                action_log.closure_approval_stage = 'unit_head'
+            elif action_log.closure_approval_stage == 'commissioner':
+                action_log.closure_approval_stage = 'assistant_commissioner'
+            action_log.status = 'in_progress'
+            action_log.save()
+            # Add rejection comment
+            comment_text = request.data.get('comment', '')
+            if comment_text:
+                ActionLogComment.objects.create(
+                    action_log=action_log,
+                    user=user,
+                    comment=comment_text,
+                    status=action_log.status,
+                    is_approved=False
+                )
+            return Response(self.get_serializer(action_log).data, status=status.HTTP_200_OK)
+        elif action_log.closure_approval_stage == 'unit_head':
+            # Rejected at unit head, return to requester
+            action_log.closure_approval_stage = 'none'
+            action_log.status = 'in_progress'
+            action_log.save()
+            comment_text = request.data.get('comment', '')
+            if comment_text:
+                ActionLogComment.objects.create(
+                    action_log=action_log,
+                    user=user,
+                    comment=comment_text,
+                    status=action_log.status,
+                    is_approved=False
+                )
+            return Response(self.get_serializer(action_log).data, status=status.HTTP_200_OK)
+        # --- Default rejection logic ---
         serializer = ActionLogApprovalSerializer(
             data=request.data,
             context={'request': request, 'action_log': action_log}
         )
-
         if not serializer.is_valid():
             return Response(
                 serializer.errors,
                 status=status.HTTP_400_BAD_REQUEST
             )
-
         try:
             action_log.reject(
-                request.user,
+                user,
                 serializer.validated_data.get('rejection_reason', '')
             )
             return Response(
@@ -316,7 +393,7 @@ class ActionLogViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
-            ) 
+            )
 
     @action(detail=True, methods=['get'])
     def assignment_history(self, request, pk=None):
@@ -360,35 +437,30 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        print("\n=== Comment Creation Started ===")
-        print(f"Request method: {self.request.method}")
-        print(f"Request user: {self.request.user.id} ({self.request.user.username})")
-        print(f"Request data: {self.request.data}")
+        logger.info(f"Creating comment for action log {self.request.data.get('action_log')} by user {self.request.user.id}")
         
         action_log_id = self.request.data.get('action_log')
         parent_id = self.request.data.get('parent_comment_id')
         
-        print(f"Action log ID: {action_log_id}")
-        print(f"Parent comment ID: {parent_id}")
+        logger.info(f"Action log ID: {action_log_id}")
+        logger.info(f"Parent comment ID: {parent_id}")
         
         try:
             action_log = ActionLog.objects.get(id=action_log_id)
-            print(f"Found action log: {action_log.id} - {action_log.title}")
+            logger.info(f"Found action log: {action_log.id} - {action_log.title}")
             
             # Save the comment
             comment = serializer.save(user=self.request.user, action_log=action_log)
-            print(f"Comment created with ID: {comment.id}")
+            logger.info(f"Comment {comment.id} created successfully")
             
             # Create notifications
-            print("\n=== Creating Notifications ===")
             notified_user_ids = set()
-            print(f"Sender user ID: {self.request.user.id}")
             
             # Create notification for assigned users
             assigned_users = action_log.assigned_to.all()
-            print(f"Number of assigned users: {assigned_users.count()}")
+            logger.info(f"Number of assigned users: {assigned_users.count()}")
             for user in assigned_users:
-                print(f"Checking assigned user: {user.id} ({user.username})")
+                logger.info(f"Checking assigned user: {user.id} ({user.username})")
                 if user != self.request.user:  # Don't notify the commenter
                     ActionLogNotification.objects.create(
                         user=user,
@@ -396,9 +468,9 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                         comment=comment
                     )
                     notified_user_ids.add(user.id)
-                    print(f"Notified assigned user: {user.id} ({user.username})")
+                    logger.info(f"Notification created for assigned user {user.id}")
                 else:
-                    print(f"Skipping notification for sender: {user.id} ({user.username})")
+                    logger.info(f"Skipping notification for sender: {user.id} ({user.username})")
 
             # Standard notification logic: assigned users, parent comment author, root comment author
             # Notify assigned users (except sender)
@@ -410,17 +482,15 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                         comment=comment
                     )
                     notified_user_ids.add(user.id)
-                    print(f"Notified assigned user: {user.id} ({user.username})")
-                else:
-                    print(f"Skipping notification for sender or already notified: {user.id} ({user.username})")
+                    logger.info(f"Notification created for assigned user {user.id}")
 
             # If this is a reply, notify the parent comment's author and root/original comment's author
             if parent_id:
                 try:
                     parent_comment = ActionLogComment.objects.get(id=parent_id)
                     parent_author = parent_comment.user
-                    print(f"[DEBUG] Parent author: {parent_author.id} ({parent_author.username})")
-                    print(f"[DEBUG] Sender: {self.request.user.id} ({self.request.user.username})")
+                    logger.info(f"Parent author: {parent_author.id} ({parent_author.username})")
+                    logger.info(f"Sender: {self.request.user.id} ({self.request.user.username})")
                     if parent_author != self.request.user and parent_author.id not in notified_user_ids:
                         ActionLogNotification.objects.create(
                             user=parent_author,
@@ -428,15 +498,15 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(parent_author.id)
-                        print(f"[DEBUG] Notified parent comment author: {parent_author.id} ({parent_author.username})")
+                        logger.info(f"Notification created for parent comment author {parent_author.id}")
                     else:
-                        print(f"[DEBUG] Skipping parent author notification - already notified or is sender")
+                        logger.info(f"Skipping parent author notification - already notified or is sender")
                     # Traverse up to the root/original comment
                     root_comment = parent_comment
                     while root_comment.parent_comment:
                         root_comment = root_comment.parent_comment
                     root_author = root_comment.user
-                    print(f"[DEBUG] Root author: {root_author.id} ({root_author.username})")
+                    logger.info(f"Root author: {root_author.id} ({root_author.username})")
                     if root_author != self.request.user:
                         ActionLogNotification.objects.create(
                             user=root_author,
@@ -444,17 +514,16 @@ class ActionLogCommentViewSet(viewsets.ModelViewSet):
                             comment=comment
                         )
                         notified_user_ids.add(root_author.id)
-                        print(f"[DEBUG] Notified root/original comment author: {root_author.id} ({root_author.username})")
+                        logger.info(f"Notification created for root comment author {root_author.id}")
                     else:
-                        print(f"[DEBUG] Skipping root author notification - is sender")
+                        logger.info(f"Skipping root author notification - is sender")
                 except ActionLogComment.DoesNotExist:
-                    print("[DEBUG] Parent comment does not exist for notification.")
+                    logger.info("[DEBUG] Parent comment does not exist for notification.")
                     pass
 
-            print("\n=== Comment Creation Completed ===")
-            print(f"Total users notified: {len(notified_user_ids)}")
-            print(f"Notified user IDs: {notified_user_ids}")
+            logger.info(f"Total users notified: {len(notified_user_ids)}")
+            logger.info(f"Notified user IDs: {notified_user_ids}")
             
         except ActionLog.DoesNotExist:
-            print(f"Action log not found: {action_log_id}")
+            logger.error(f"Action log not found: {action_log_id}")
             raise Http404("Action log not found") 

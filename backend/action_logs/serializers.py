@@ -22,6 +22,7 @@ class ActionLogSerializer(serializers.ModelSerializer):
     can_approve = serializers.SerializerMethodField()
     comment_count = serializers.SerializerMethodField()
     created_by_department_unit = serializers.SerializerMethodField()
+    closure_requested_by = UserSerializer(read_only=True)
 
     class Meta:
         model = ActionLog
@@ -30,11 +31,12 @@ class ActionLogSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_department_unit', 'status', 'priority', 
             'due_date', 'assigned_to', 'approved_by', 'approved_at', 
             'rejection_reason', 'created_at', 'updated_at', 'can_approve', 
-            'comment_count'
+            'comment_count', 'closure_approval_stage', 'closure_requested_by'
         ]
         read_only_fields = [
             'created_by', 'approved_by', 'approved_at',
-            'created_at', 'updated_at', 'comment_count'
+            'created_at', 'updated_at', 'comment_count',
+            'closure_approval_stage', 'closure_requested_by'
         ]
 
     def get_can_approve(self, obj):
@@ -145,11 +147,12 @@ class ActionLogCommentSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     replies = serializers.SerializerMethodField()
     parent_id = serializers.IntegerField(write_only=True, required=False)
+    status = serializers.CharField(read_only=True)
 
     class Meta:
         model = ActionLogComment
-        fields = ['id', 'action_log', 'user', 'comment', 'created_at', 'updated_at', 'parent_id', 'replies']
-        read_only_fields = ['id', 'user', 'created_at', 'updated_at']
+        fields = ['id', 'action_log', 'user', 'comment', 'created_at', 'updated_at', 'parent_id', 'replies', 'status']
+        read_only_fields = ['id', 'user', 'created_at', 'updated_at', 'status']
 
     def get_replies(self, obj):
         replies = obj.replies.all().select_related('user').order_by('created_at')

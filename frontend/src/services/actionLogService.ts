@@ -41,8 +41,8 @@ export const actionLogService = {
     return response.data;
   },
 
-  approve: async (id: number): Promise<ActionLog> => {
-    const response = await api.post(`/action-logs/${id}/approve/`);
+  approve: async (id: number, data?: any): Promise<ActionLog> => {
+    const response = await api.post(`/action-logs/${id}/approve/`, data);
     return response.data;
   },
 

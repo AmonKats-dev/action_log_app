@@ -621,7 +621,11 @@ const Dashboard: React.FC = () => {
           fontWeight: 600,
           color: '#1a1a1a',
           fontSize: '14px',
-          lineHeight: '1.4'
+          lineHeight: '1.4',
+          textAlign: 'left',
+          whiteSpace: 'normal',
+          wordBreak: 'break-word',
+          padding: '4px 0'
         }}>
           {text}
         </div>
